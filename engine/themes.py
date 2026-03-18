@@ -1,6 +1,6 @@
 """Theme definitions matching Signum's design system.
 
-Four themes: dark, light, ft (Financial Times), midnight.
+Five themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire).
 """
 
 THEMES = {
@@ -217,6 +217,63 @@ THEMES = {
         "volume": {
             "upColor": "rgba(38, 166, 154, 0.5)",
             "downColor": "rgba(239, 83, 80, 0.5)",
+        },
+    },
+
+    # ── Rome (Roman Empire) ───────────────────────────────────────────────
+    # Cool white marble background, Mediterranean teal (up), shield crimson (down),
+    # gold accents, Tyrian purple lines, Palatino serif font.
+    "rome": {
+        "chart": {
+            "layout": {
+                "background": {"type": "solid", "color": "#fafafa"},
+                "textColor": "#3d2b1f",
+                "fontSize": 12,
+                "fontFamily": "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif",
+            },
+            "grid": {
+                "vertLines": {"color": "rgba(0, 0, 0, 0.05)"},
+                "horzLines": {"color": "rgba(0, 0, 0, 0.05)"},
+            },
+            "crosshair": {
+                "mode": 0,
+                "vertLine": {"width": 1, "color": "rgba(184, 134, 11, 0.5)", "style": 3},
+                "horzLine": {"width": 1, "color": "rgba(184, 134, 11, 0.5)", "style": 3},
+            },
+            "rightPriceScale": {"borderColor": "rgba(61, 43, 31, 0.12)"},
+            "timeScale": {"borderColor": "rgba(61, 43, 31, 0.12)"},
+        },
+        "candlestick": {
+            "upColor": "#2a8c82",
+            "downColor": "#8b1a2b",
+            "borderUpColor": "#2a8c82",
+            "borderDownColor": "#8b1a2b",
+            "wickUpColor": "#2a8c82",
+            "wickDownColor": "#8b1a2b",
+        },
+        "line": {"color": "#6b3fa0", "lineWidth": 2},
+        "line_colors": [
+            "#6b3fa0", "#b8860b", "#8b1a2b", "#2a8c82",
+            "#cd853f", "#4a6741", "#c17817", "#5b7eaa",
+        ],
+        "area": {
+            "topColor": "rgba(107, 63, 160, 0.35)",
+            "bottomColor": "rgba(107, 63, 160, 0.04)",
+            "lineColor": "#6b3fa0",
+            "lineWidth": 2,
+        },
+        "baseline": {
+            "topLineColor": "#2a8c82",
+            "topFillColor1": "rgba(42, 140, 130, 0.25)",
+            "topFillColor2": "rgba(42, 140, 130, 0.04)",
+            "bottomLineColor": "#8b1a2b",
+            "bottomFillColor1": "rgba(139, 26, 43, 0.04)",
+            "bottomFillColor2": "rgba(139, 26, 43, 0.25)",
+        },
+        "histogram": {"color": "#b8860b"},
+        "volume": {
+            "upColor": "rgba(42, 140, 130, 0.40)",
+            "downColor": "rgba(139, 26, 43, 0.40)",
         },
     },
 }

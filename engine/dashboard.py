@@ -85,9 +85,13 @@ class Dashboard:
         title_font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
         # Logo invert for light backgrounds
-        _bg_hex = bg.lstrip("#")
-        _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
-        _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
+        _logo_invert = ""
+        if bg.startswith("#") and len(bg) >= 7:
+            _bg_hex = bg.lstrip("#")
+            _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
+            _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
+        elif self._theme.get("background_css") or self._theme.get("background_svg"):
+            _logo_invert = "filter:invert(1);"
 
         lc_js = _get_lc_js()
 
@@ -193,6 +197,13 @@ class Dashboard:
         if (r) for (let j = 1; j < charts.length; j++) charts[j].timeScale().setVisibleLogicalRange(r);
     });"""
 
+        # Theme may override body background with CSS marble/texture
+        custom_bg_css = self._theme.get("background_css", "")
+        bg_css = custom_bg_css if custom_bg_css else f"background:{bg};"
+
+        # SVG marble texture (rendered behind charts)
+        bg_svg = self._theme.get("background_svg", "")
+
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -200,10 +211,11 @@ class Dashboard:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:{bg};overflow-y:auto;overflow-x:hidden;position:relative}}
+body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative}}
 #signum-logo{{position:absolute;left:12px;bottom:4px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
+{bg_svg}
 {divs_html}
 {'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}
 <script>

@@ -444,6 +444,11 @@ class Chart:
         # Disable default attribution logo
         layout = opts.get("layout", {})
         layout["attributionLogo"] = False
+
+        # If theme has CSS texture background, make canvas transparent
+        if self._theme.get("background_css"):
+            layout["background"] = {"type": "solid", "color": "transparent"}
+
         opts["layout"] = layout
 
         if self._watermark:
@@ -501,10 +506,22 @@ class Chart:
         width_css = "100%" if not self._width else f"{self._width}px"
         lc_js = _get_lc_js()
 
+        # Theme may override body background with CSS marble/texture
+        custom_bg_css = self._theme.get("background_css", "")
+        bg_css = custom_bg_css if custom_bg_css else f"background:{bg};"
+
+        # SVG marble texture (rendered behind the canvas)
+        bg_svg = self._theme.get("background_svg", "")
+
         # Detect light background → invert the white SVG logo to black
-        _bg_hex = bg.lstrip("#")
-        _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
-        _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
+        _logo_invert = ""
+        if bg.startswith("#") and len(bg) >= 7:
+            _bg_hex = bg.lstrip("#")
+            _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
+            if _r * 0.299 + _g * 0.587 + _b * 0.114 > 150:
+                _logo_invert = "filter:invert(1);"
+        elif custom_bg_css or bg_svg:
+            _logo_invert = "filter:invert(1);"  # textured themes are light
 
         return f"""<!DOCTYPE html>
 <html><head>
@@ -513,12 +530,13 @@ class Chart:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:{bg};overflow:hidden;position:relative}}
-#fc{{width:{width_css};height:{self._height}px}}
+body{{{bg_css}overflow:hidden;position:relative}}
+#fc{{width:{width_css};height:{self._height}px;position:relative;z-index:1}}
 #err{{position:absolute;top:0;left:0;color:red;font-size:11px;z-index:9999;padding:4px;background:rgba(0,0,0,0.9);display:none}}
 #signum-logo{{position:absolute;left:12px;bottom:-20px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
+{bg_svg}
 <div id="fc"></div>
 <div id="err"></div>
 {'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}

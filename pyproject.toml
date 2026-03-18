@@ -1,0 +1,47 @@
+# Use setuptools instead — simpler for "repo root = package" layout
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signum"
+version = "0.2.0"
+description = "Professional financial charting for Python — Jupyter, Dash, Streamlit, standalone HTML."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Andrey" },
+]
+keywords = ["finance", "charting", "trading", "jupyter", "dash", "streamlit", "lightweight-charts"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Jupyter",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "pandas>=1.3",
+]
+
+[project.optional-dependencies]
+yfinance = ["yfinance>=0.2"]
+dash = ["dash>=2.0"]
+streamlit = ["streamlit>=1.0"]
+all = ["yfinance>=0.2", "dash>=2.0", "streamlit>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/SugoiKitsune/signum"
+Repository = "https://github.com/SugoiKitsune/signum"
+
+# setuptools: find the package at "." (repo root has __init__.py)
+[tool.setuptools]
+packages = ["signum", "signum.engine"]
+
+[tool.setuptools.package-dir]
+signum = "."
+
+[tool.setuptools.package-data]
+signum = ["vendor/*.js", "vendor/LICENSE", "assets/logo_signum.svg", "README.md"]
