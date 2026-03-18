@@ -1,4 +1,4 @@
-<h1><img src="assets/logo_signum.svg" width="32" height="32" alt="Signum" style="vertical-align: middle;"> Signum</h1>
+<h1><img src="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/logo_signum.svg" width="32" height="32" alt="Signum" style="vertical-align: middle;"> Signum</h1>
 
 Financial charting for Python — **Jupyter**, **Dash**, **Streamlit**, standalone HTML.  
 Inspired by Lightweight Charts.
