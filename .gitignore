@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+*.html
+!README.md
+.vscode/
+*.egg-info/
+dist/
+build/
+assets/archive/
