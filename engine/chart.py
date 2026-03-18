@@ -72,12 +72,14 @@ class Chart:
         width: Optional[int] = None,
         height: int = 400,
         watermark: Optional[str] = None,
+        logo: bool = True,
     ):
         self._theme_name = theme
         self._theme = THEMES.get(theme, THEMES["dark"])
         self._width = width
         self._height = height
         self._watermark = watermark
+        self._logo = logo
         self._series: List[Dict[str, Any]] = []
         self._price_lines: List[Dict[str, Any]] = []
         self._markers: Dict[int, List[Dict[str, Any]]] = {}
@@ -519,7 +521,7 @@ body{{background:{bg};overflow:hidden;position:relative}}
 </head><body>
 <div id="fc"></div>
 <div id="err"></div>
-<img id="signum-logo" src="data:image/svg+xml;base64,{_LOGO_B64}" width="36" height="36" alt="Signum">
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}
 <script>
 try {{
     const chart = LightweightCharts.createChart(document.getElementById('fc'), {chart_opts});

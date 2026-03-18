@@ -33,9 +33,11 @@ class Dashboard:
         theme: Optional[str] = None,
         titles: Optional[List[str]] = None,
         gap: int = 2,
+        logo: bool = True,
     ):
         self._panes: List[Chart] = panes or []
         self._titles: List[str] = titles or []
+        self._logo = logo
         # Infer theme from first pane when not given explicitly
         if theme:
             self._theme_name = theme
@@ -203,7 +205,7 @@ body{{background:{bg};overflow-y:auto;overflow-x:hidden;position:relative}}
 </style>
 </head><body>
 {divs_html}
-<img id="signum-logo" src="data:image/svg+xml;base64,{_LOGO_B64}" width="36" height="36" alt="Signum">
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}
 <script>
     const charts = [];
     const firstSeries = [];
