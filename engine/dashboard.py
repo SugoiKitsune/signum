@@ -40,7 +40,7 @@ class Dashboard:
         self._logo = logo
         # Infer theme from first pane when not given explicitly
         if theme:
-            self._theme_name = theme
+            self._theme_name = theme.lower()
         elif self._panes:
             self._theme_name = self._panes[0]._theme_name
         else:
@@ -80,7 +80,7 @@ class Dashboard:
             .get("background", {})
             .get("color", "#1e1e1e")
         )
-        is_dark = self._theme_name in ("dark", "midnight")
+        is_dark = self._theme_name in ("dark", "midnight", "distfit")
         title_color = "rgba(255,255,255,0.55)" if is_dark else "rgba(0,0,0,0.55)"
         title_font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
@@ -91,7 +91,8 @@ class Dashboard:
             _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
             _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
         elif self._theme.get("background_css") or self._theme.get("background_svg"):
-            _logo_invert = "filter:invert(1);"
+            if self._theme_name not in ("dark", "midnight", "distfit"):
+                _logo_invert = "filter:invert(1);"
 
         lc_js = _get_lc_js()
 
@@ -211,13 +212,13 @@ class Dashboard:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative}}
-#signum-logo{{position:absolute;left:12px;bottom:4px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
+body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative;border-radius:12px}}
+#signum-logo{{position:fixed;left:12px;bottom:8px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
 {bg_svg}
 {divs_html}
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="24" height="24" alt="Signum">' if self._logo else ''}
 <script>
     const charts = [];
     const firstSeries = [];
@@ -235,15 +236,16 @@ body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative}}
         h = self.total_height + 40
         uid = f"fd{id(self)}"
         return (
-            f'<div id="{uid}" style="width:100%;height:{h}px;border-radius:4px;overflow:hidden;">'
+            f'<div id="{uid}" style="width:100%;height:{h}px;border-radius:12px;overflow:hidden;">'
             f'</div><script>'
             f'(function(){{'
-            f'var b=atob("{b64}");'
-            f'var blob=new Blob([b],{{type:"text/html"}});'
+            f'var a=atob("{b64}"),b=new Uint8Array(a.length);'
+            f'for(var i=0;i<a.length;i++)b[i]=a.charCodeAt(i);'
+            f'var blob=new Blob([b],{{type:"text/html;charset=utf-8"}});'
             f'var url=URL.createObjectURL(blob);'
             f'var f=document.createElement("iframe");'
             f'f.src=url;f.style.width="100%";f.style.height="{h}px";'
-            f'f.style.border="none";f.style.borderRadius="4px";'
+            f'f.style.border="none";f.style.borderRadius="12px";'
             f'document.getElementById("{uid}").appendChild(f);'
             f'}})();'
             f'</script>'

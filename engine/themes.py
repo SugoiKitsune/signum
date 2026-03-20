@@ -1,6 +1,7 @@
 """Theme definitions matching Signum's design system.
 
-Five themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire).
+Six themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire),
+distfit (academic probability — ideal for StatChart).
 """
 
 THEMES = {
@@ -274,6 +275,75 @@ THEMES = {
         "volume": {
             "upColor": "rgba(42, 140, 130, 0.40)",
             "downColor": "rgba(139, 26, 43, 0.40)",
+        },
+    },
+
+    # ── Distfit (Academic / Probability) ───────────────────────────────────
+    # Inspired by distfit library aesthetics: dark navy gradient background,
+    # white italic serif, outlined bars, smooth PDF overlays.
+    "distfit": {
+        "chart": {
+            "layout": {
+                "background": {"type": "solid", "color": "#232b45"},
+                "textColor": "#d5d3cf",
+                "fontSize": 12,
+                "fontFamily": "'Crimson Text', 'Palatino Linotype', Palatino, Georgia, serif",
+            },
+            "grid": {
+                "vertLines": {"color": "rgba(255, 255, 255, 0.05)"},
+                "horzLines": {"color": "rgba(255, 255, 255, 0.05)"},
+            },
+            "crosshair": {
+                "mode": 0,
+                "vertLine": {"width": 1, "color": "rgba(255, 255, 255, 0.35)", "style": 3},
+                "horzLine": {"width": 1, "color": "rgba(255, 255, 255, 0.35)", "style": 3},
+            },
+            "rightPriceScale": {"borderColor": "transparent", "borderVisible": False},
+            "timeScale": {"borderColor": "transparent", "borderVisible": False},
+        },
+        # Radial gradient: lighter navy center fading to darker edges
+        "background_css": "background:radial-gradient(ellipse at 50% 40%, #323c5c 0%, #232b45 55%, #1a2035 100%);",
+        "candlestick": {
+            "upColor": "#6b9dc8",
+            "downColor": "#c75b6a",
+            "borderUpColor": "#6b9dc8",
+            "borderDownColor": "#c75b6a",
+            "wickUpColor": "#6b9dc8",
+            "wickDownColor": "#c75b6a",
+        },
+        "line": {"color": "#d5d3cf", "lineWidth": 2},
+        "line_colors": [
+            "#d5d3cf", "#6b9dc8", "#c89b6b", "#8bc89b",
+            "#c75b6a", "#a78dc8", "#d4c36b", "#7bb8c8",
+        ],
+        "area": {
+            "topColor": "rgba(213, 211, 207, 0.30)",
+            "bottomColor": "rgba(213, 211, 207, 0.03)",
+            "lineColor": "#d5d3cf",
+            "lineWidth": 2,
+        },
+        "baseline": {
+            "topLineColor": "#6b9dc8",
+            "topFillColor1": "rgba(107, 157, 200, 0.25)",
+            "topFillColor2": "rgba(107, 157, 200, 0.04)",
+            "bottomLineColor": "#c75b6a",
+            "bottomFillColor1": "rgba(199, 91, 106, 0.04)",
+            "bottomFillColor2": "rgba(199, 91, 106, 0.25)",
+        },
+        "histogram": {"color": "#6b9dc8"},
+        "volume": {
+            "upColor": "rgba(107, 157, 200, 0.45)",
+            "downColor": "rgba(199, 91, 106, 0.45)",
+        },
+        # StatChart-specific: bars = same white/cream as text, with outline stroke
+        "stat": {
+            "bar_stroke": "rgba(200, 200, 195, 0.50)",
+            "bar_stroke_width": 0.7,
+            "bar_fill": "rgba(200, 200, 195, 0.08)",
+            "fit_color": "rgba(220, 218, 212, 0.90)",
+            "fit_line_width": 2,
+            "font_style": "italic",
+            "percentile_color": "rgba(200, 200, 195, 0.45)",
         },
     },
 }

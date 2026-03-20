@@ -74,8 +74,8 @@ class Chart:
         watermark: Optional[str] = None,
         logo: bool = True,
     ):
-        self._theme_name = theme
-        self._theme = THEMES.get(theme, THEMES["dark"])
+        self._theme_name = theme.lower()
+        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
         self._width = width
         self._height = height
         self._watermark = watermark
@@ -452,7 +452,7 @@ class Chart:
         opts["layout"] = layout
 
         if self._watermark:
-            is_dark = self._theme_name in ("dark", "midnight")
+            is_dark = self._theme_name in ("dark", "midnight", "distfit")
             opts["watermark"] = {
                 "visible": True,
                 "text": self._watermark,
@@ -521,7 +521,9 @@ class Chart:
             if _r * 0.299 + _g * 0.587 + _b * 0.114 > 150:
                 _logo_invert = "filter:invert(1);"
         elif custom_bg_css or bg_svg:
-            _logo_invert = "filter:invert(1);"  # textured themes are light
+            # Only invert if the theme is actually light (distfit is dark with a CSS gradient)
+            if self._theme_name not in ("dark", "midnight", "distfit"):
+                _logo_invert = "filter:invert(1);"
 
         return f"""<!DOCTYPE html>
 <html><head>
@@ -530,7 +532,7 @@ class Chart:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{{bg_css}overflow:hidden;position:relative}}
+body{{{bg_css}overflow:hidden;position:relative;border-radius:12px}}
 #fc{{width:{width_css};height:{self._height}px;position:relative;z-index:1}}
 #err{{position:absolute;top:0;left:0;color:red;font-size:11px;z-index:9999;padding:4px;background:rgba(0,0,0,0.9);display:none}}
 #signum-logo{{position:absolute;left:12px;bottom:-20px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
@@ -539,7 +541,7 @@ body{{{bg_css}overflow:hidden;position:relative}}
 {bg_svg}
 <div id="fc"></div>
 <div id="err"></div>
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="36" height="36" alt="Signum">' if self._logo else ''}
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="24" height="24" alt="Signum">' if self._logo else ''}
 <script>
 try {{
     const chart = LightweightCharts.createChart(document.getElementById('fc'), {chart_opts});
@@ -564,15 +566,16 @@ try {{
         h = self._height + 30
         uid = f"fc{id(self)}"
         return (
-            f'<div id="{uid}" style="width:100%;height:{h}px;border-radius:4px;overflow:hidden;">'
+            f'<div id="{uid}" style="width:100%;height:{h}px;border-radius:12px;overflow:hidden;">'
             f'</div><script>'
             f'(function(){{'
-            f'var b=atob("{b64}");'
-            f'var blob=new Blob([b],{{type:"text/html"}});'
+            f'var a=atob("{b64}"),b=new Uint8Array(a.length);'
+            f'for(var i=0;i<a.length;i++)b[i]=a.charCodeAt(i);'
+            f'var blob=new Blob([b],{{type:"text/html;charset=utf-8"}});'
             f'var url=URL.createObjectURL(blob);'
             f'var f=document.createElement("iframe");'
             f'f.src=url;f.style.width="100%";f.style.height="{h}px";'
-            f'f.style.border="none";f.style.borderRadius="4px";'
+            f'f.style.border="none";f.style.borderRadius="12px";'
             f'document.getElementById("{uid}").appendChild(f);'
             f'}})();'
             f'</script>'

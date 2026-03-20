@@ -14,6 +14,7 @@ Usage:
 
 from .engine.chart import Chart
 from .engine.dashboard import Dashboard
+from .engine.statchart import StatChart
 
-__all__ = ["Chart", "Dashboard"]
+__all__ = ["Chart", "Dashboard", "StatChart"]
 __version__ = "0.2.0"
