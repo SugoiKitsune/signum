@@ -18,7 +18,10 @@ Pattern (matches TKAN / Cogilator multi-panel layouts):
 """
 
 import json
+import math
 from typing import List, Optional
+
+import pandas as pd
 
 from .chart import Chart, _get_lc_js, _LOGO_B64
 from .themes import THEMES
@@ -38,6 +41,7 @@ class Dashboard:
         self._panes: List[Chart] = panes or []
         self._titles: List[str] = titles or []
         self._logo = logo
+        self._theme_explicit = theme is not None
         # Infer theme from first pane when not given explicitly
         if theme:
             self._theme_name = theme.lower()
@@ -47,9 +51,32 @@ class Dashboard:
             self._theme_name = "dark"
         self._theme = THEMES.get(self._theme_name, THEMES["dark"])
         self._gap = gap
+        # Push explicit theme down to all panes
+        if self._theme_explicit:
+            for pane in self._panes:
+                pane._theme_name = self._theme_name
+                pane._theme = self._theme
+        self._threshold_config = None
+
+    @property
+    def theme(self) -> str:
+        return self._theme_name
+
+    @theme.setter
+    def theme(self, value: str):
+        """Change the theme for the entire dashboard and all its panes."""
+        self._theme_name = value.lower()
+        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
+        self._theme_explicit = True
+        for pane in self._panes:
+            pane._theme_name = self._theme_name
+            pane._theme = self._theme
 
     def add(self, pane: Chart, title: Optional[str] = None) -> "Dashboard":
         """Append a chart pane with an optional title."""
+        if self._theme_explicit:
+            pane._theme_name = self._theme_name
+            pane._theme = self._theme
         self._panes.append(pane)
         if title:
             # Pad the titles list to match the pane index
@@ -58,10 +85,78 @@ class Dashboard:
             self._titles.append(title)
         return self
 
+    def threshold_control(
+        self,
+        df: pd.DataFrame,
+        threshold: float = 0.0,
+        min_val: float = -0.05,
+        max_val: float = 0.05,
+        step: float = 0.001,
+        value_col: Optional[str] = None,
+        price_pane: int = 0,
+        buy_color: Optional[str] = None,
+        sell_color: Optional[str] = None,
+    ) -> "Dashboard":
+        """Add an interactive threshold slider to the dashboard.
+
+        Adds a signal pane showing the signal line + moving threshold,
+        shading on the price pane, and a slider below all panes.
+
+        Parameters
+        ----------
+        df : DataFrame with time + value columns (signal series).
+        threshold : initial threshold value.
+        price_pane : index of the pane to add markers/shading to (default 0).
+        """
+        time_col = Chart._detect_time_col(df)
+        df = df.copy()
+        if time_col == "__index__":
+            df["time"] = df.index
+        elif time_col != "time":
+            df["time"] = df[time_col]
+        if pd.api.types.is_datetime64_any_dtype(df["time"]):
+            df["time"] = df["time"].dt.strftime("%Y-%m-%d")
+        else:
+            df["time"] = pd.to_datetime(df["time"]).dt.strftime("%Y-%m-%d")
+
+        vcol = value_col
+        if not vcol:
+            for name in ("value", "close", "Close", "VALUE", "price", "Price"):
+                if name in df.columns:
+                    vcol = name
+                    break
+            if not vcol:
+                for col in df.columns:
+                    if col != "time" and pd.api.types.is_numeric_dtype(df[col]):
+                        vcol = col
+                        break
+        data = (
+            df[["time", vcol]]
+            .rename(columns={vcol: "value"})
+            .dropna(subset=["value"])
+            .to_dict("records")
+        )
+        up_clr = buy_color or self._theme.get("candlestick", {}).get("upColor", "#26a69a")
+        dn_clr = sell_color or self._theme.get("candlestick", {}).get("downColor", "#ef5350")
+        decimals = max(0, -int(math.floor(math.log10(step)))) if step > 0 else 3
+        self._threshold_config = {
+            "data": data,
+            "threshold": threshold,
+            "min_val": min_val,
+            "max_val": max_val,
+            "step": step,
+            "decimals": decimals,
+            "price_pane": price_pane,
+            "buy_color": up_clr,
+            "sell_color": dn_clr,
+        }
+        return self
+
     @property
     def total_height(self) -> int:
         title_h = sum(24 for i in range(len(self._panes)) if self._get_title(i))
-        return sum(p._height for p in self._panes) + self._gap * max(0, len(self._panes) - 1) + title_h
+        slider_h = 36 if self._threshold_config else 0
+        return sum(p._height for p in self._panes) + self._gap * max(0, len(self._panes) - 1) + title_h + slider_h
 
     def _get_title(self, idx: int) -> str:
         if idx < len(self._titles):
@@ -149,10 +244,132 @@ class Dashboard:
         divs_html = "\n".join(pane_divs)
         scripts_body = "\n    ".join(pane_scripts)
 
+        # ── Threshold slider (dashboard-level) ────────────────────────────
+        slider_html = ""
+        slider_js = ""
+        if self._threshold_config:
+            tc = self._threshold_config
+            dec = tc["decimals"]
+            lbl_c = "rgba(255,255,255,0.88)" if is_dark else "rgba(0,0,0,0.78)"
+            cnt_c = "rgba(255,255,255,0.48)" if is_dark else "rgba(0,0,0,0.42)"
+            thr0 = tc["threshold"]
+            pp = tc["price_pane"]
+            price_chart = f"chart{pp}"
+            price_s0 = f"p{pp}_s0"
+            tdata_json = json.dumps(tc["data"], separators=(",", ":"))
+
+            bc = tc["buy_color"].lstrip("#")
+            sr, sg, sb = int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16)
+            shade_fill = f"rgba({sr},{sg},{sb},0.10)"
+            shade_line = f"rgba({sr},{sg},{sb},0.25)"
+
+            slider_html = (
+                f'<div id="th-bar" style="display:flex;align-items:center;justify-content:center;'
+                f'gap:10px;background:transparent;padding:6px 16px;white-space:nowrap;height:36px">'
+                f'<span id="th-label" style="color:{lbl_c};'
+                f"font:11px/1 'SF Mono','Consolas',monospace;min-width:72px\">"
+                f'\u03b8\u00a0=\u00a0{thr0:.{dec}f}</span>'
+                f'<input id="th-slider" type="range" '
+                f'min="{tc["min_val"]}" max="{tc["max_val"]}" step="{tc["step"]}" '
+                f'value="{thr0}" '
+                f'style="width:220px;cursor:pointer;accent-color:{tc["buy_color"]}">'
+                f'<span id="th-count" style="color:{cnt_c};font:11px/1 sans-serif;'
+                f'min-width:60px;text-align:right"></span>'
+                f'</div>'
+            )
+            divs_html += "\n" + slider_html
+
+            slider_js = "\n".join([
+                "",
+                "    // ── Dashboard threshold slider ───────────────────────────────",
+                f"    const _td = {tdata_json};",
+                f'    const _tBuy = "{tc["buy_color"]}";',
+                f'    const _tSell = "{tc["sell_color"]}";',
+                f"    const _tDec = {dec};",
+                "",
+                "    // Shading area on price pane",
+                f"    const _shadeSeries = {price_chart}.addSeries(LightweightCharts.AreaSeries, {{",
+                '        priceScaleId: "_thShade",',
+                "        lineWidth: 1,",
+                f'        lineColor: "{shade_line}",',
+                "        lineType: 2,",
+                f'        topColor: "{shade_fill}",',
+                '        bottomColor: "transparent",',
+                "        crosshairMarkerVisible: false,",
+                "        pointMarkersVisible: false,",
+                "        lastValueVisible: false,",
+                "        priceLineVisible: false,",
+                "    });",
+                f'    {price_chart}.priceScale("_thShade").applyOptions({{visible:false,scaleMargins:{{top:0,bottom:0}}}});',
+                "",
+                "    // Signal line pane — grey out below threshold, colored above",
+                "    const _thresholdLines = [];",
+                "    const _sigSeries = [];",
+                "    for (let ci = 0; ci < charts.length; ci++) {",
+                f"        if (ci === {pp}) continue;",
+                "        const fs = firstSeries[ci];",
+                "        if (fs) {",
+                "            try {",
+                "                // Override baseline: above θ = colored, below θ = grey",
+                "                fs.applyOptions({",
+                f'                    baseValue: {{type:"price",price:{thr0}}},',
+                f'                    topLineColor: "{tc["buy_color"]}",',
+                f'                    topFillColor1: "rgba({sr},{sg},{sb},0.28)",',
+                f'                    topFillColor2: "rgba({sr},{sg},{sb},0.05)",',
+                '                    bottomLineColor: "rgba(120,120,120,0.4)",',
+                '                    bottomFillColor1: "rgba(120,120,120,0.05)",',
+                '                    bottomFillColor2: "rgba(120,120,120,0.18)",',
+                "                });",
+                "                _sigSeries.push(fs);",
+                f'                const pl = fs.createPriceLine({{price:{thr0},title:"\\u03b8",color:"{tc["buy_color"]}",lineWidth:1,lineStyle:2,axisLabelVisible:true}});',
+                "                _thresholdLines.push(pl);",
+                "            } catch(e) {}",
+                "        }",
+                "    }",
+                "",
+                "    function _buildShade(thr) {",
+                "        const d = []; let on = false;",
+                "        for (let i = 0; i < _td.length; i++) {",
+                "            const above = _td[i].value >= thr;",
+                "            if (above && !on) on = true;",
+                "            else if (!above && on) on = false;",
+                "            d.push({time: _td[i].time, value: on ? 1 : 0});",
+                "        }",
+                "        return d;",
+                "    }",
+                "",
+                "    function _mkrs(thr) {",
+                "        const m = []; let on = false;",
+                "        for (let i = 0; i < _td.length; i++) {",
+                "            const a = _td[i].value >= thr;",
+                '            if (a && !on) { m.push({time:_td[i].time,position:"belowBar",shape:"arrowUp",color:_tBuy,text:""}); on=true; }',
+                '            else if (!a && on) { m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:""}); on=false; }',
+                "        }",
+                "        return m;",
+                "    }",
+                "",
+                f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}));",
+                f"    _shadeSeries.setData(_buildShade({thr0}));",
+                "    (function() {",
+                f"        const m0 = _mkrs({thr0});",
+                '        document.getElementById("th-count").textContent = m0.filter(x=>x.shape==="arrowUp").length + " signals";',
+                "    })();",
+                '    document.getElementById("th-slider").addEventListener("input", function() {',
+                "        const thr = parseFloat(this.value);",
+                '        document.getElementById("th-label").textContent = "\\u03b8\\u00a0=\\u00a0" + thr.toFixed(_tDec);',
+                "        const m = _mkrs(thr);",
+                "        _thP.setMarkers(m);",
+                "        _shadeSeries.setData(_buildShade(thr));",
+                "        for (const pl of _thresholdLines) { pl.applyOptions({price: thr}); }",
+                '        for (const ss of _sigSeries) { ss.applyOptions({baseValue:{type:"price",price:thr}}); }',
+                '        document.getElementById("th-count").textContent = m.filter(x=>x.shape==="arrowUp").length + " signals";',
+                "    });",
+            ])
+
         # Crosshair + time scale sync JS
         sync_js = """
-    // ── Initial fit: use chart 0 as the master range ────────────
-    charts[0].timeScale().fitContent();
+    // ── Initial fit: all charts fit their own content, then sync by LOGICAL RANGE ─
+    for (let i = 0; i < charts.length; i++) charts[i].timeScale().fitContent();
     setTimeout(() => {
         const range = charts[0].timeScale().getVisibleLogicalRange();
         if (range) {
@@ -160,16 +377,19 @@ class Dashboard:
                 charts[j].timeScale().setVisibleLogicalRange(range);
             }
         }
-    }, 0);
+    }, 50);
 
-    // ── Sync time scales (scroll / zoom) ────────────────────────
+    // ── Sync time scales (scroll / zoom) — logical range keeps bar positions identical ──
     let _syncing = false;
     function syncTimeScales(srcIdx) {
-        charts[srcIdx].timeScale().subscribeVisibleLogicalRangeChange(range => {
-            if (_syncing || !range) return;
+        charts[srcIdx].timeScale().subscribeVisibleLogicalRangeChange(() => {
+            if (_syncing) return;
             _syncing = true;
-            for (let j = 0; j < charts.length; j++) {
-                if (j !== srcIdx) charts[j].timeScale().setVisibleLogicalRange(range);
+            const range = charts[srcIdx].timeScale().getVisibleLogicalRange();
+            if (range) {
+                for (let j = 0; j < charts.length; j++) {
+                    if (j !== srcIdx) charts[j].timeScale().setVisibleLogicalRange(range);
+                }
             }
             _syncing = false;
         });
@@ -181,10 +401,12 @@ class Dashboard:
         charts[srcIdx].subscribeCrosshairMove(param => {
             for (let j = 0; j < charts.length; j++) {
                 if (j === srcIdx) continue;
-                if (!param || !param.time) {
+                if (!param || !param.logical === null) {
                     charts[j].clearCrosshairPosition();
-                } else if (firstSeries[j]) {
+                } else if (firstSeries[j] && param.time) {
                     charts[j].setCrosshairPosition(NaN, param.time, firstSeries[j]);
+                } else {
+                    charts[j].clearCrosshairPosition();
                 }
             }
         });
@@ -212,18 +434,19 @@ class Dashboard:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative;border-radius:12px}}
-#signum-logo{{position:fixed;left:12px;bottom:8px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
+body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative;border-radius:12px;padding-bottom:36px}}
+#signum-logo{{position:absolute;right:12px;bottom:6px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
 {bg_svg}
 {divs_html}
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="24" height="24" alt="Signum">' if self._logo else ''}
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
     const charts = [];
     const firstSeries = [];
     {scripts_body}
     {sync_js}
+    {slider_js}
 </script>
 </body></html>"""
 
