@@ -265,9 +265,9 @@ class StatChart:
             logo_html = (
                 f'<img id="signum-logo" '
                 f'src="data:image/svg+xml;base64,{_LOGO_B64}" '
-                f'width="24" height="24" alt="Signum" '
-                f'style="position:fixed;left:10px;bottom:6px;'
-                f'opacity:0.5;pointer-events:none;{logo_invert}">'
+                f'width="30" height="30" alt="Signum" '
+                f'style="position:fixed;right:12px;bottom:6px;'
+                f'opacity:0.7;pointer-events:none;{logo_invert}">'
             )
 
         # Height accounting: title ≈ 40px

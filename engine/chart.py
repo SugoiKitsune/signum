@@ -5,6 +5,7 @@ Works in Jupyter notebooks (inline), Dash apps, Streamlit, and standalone HTML.
 """
 
 import json
+import math
 import html as html_module
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -84,6 +85,8 @@ class Chart:
         self._price_lines: List[Dict[str, Any]] = []
         self._markers: Dict[int, List[Dict[str, Any]]] = {}
         self._line_color_idx = 0
+        self._threshold_config: Optional[Dict[str, Any]] = None
+        self._stats_legend: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -175,11 +178,14 @@ class Chart:
         """Add line series. Automatically detects value/close column."""
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
-        data = (
-            df[["time", vcol]]
-            .rename(columns={vcol: "value"})
-            .dropna(subset=["value"])
-            .to_dict("records")
+        # LightweightCharts whitespace pattern: NaN rows become {time: ...} only
+        # (no 'value' key) — this keeps the full time axis anchored while the
+        # line shows a gap.  {value: null} is NOT valid in LWC LineSeries.
+        tmp = df[["time", vcol]].rename(columns={vcol: "value"})
+        valid = tmp["value"].notna()
+        data = sorted(
+            tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
+            key=lambda r: r["time"],
         )
         series_opts = {**options}
         series_opts["color"] = color or self._next_line_color()
@@ -199,11 +205,12 @@ class Chart:
         """Add area series (filled line chart)."""
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
-        data = (
-            df[["time", vcol]]
-            .rename(columns={vcol: "value"})
-            .dropna(subset=["value"])
-            .to_dict("records")
+        # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
+        tmp = df[["time", vcol]].rename(columns={vcol: "value"})
+        valid = tmp["value"].notna()
+        data = sorted(
+            tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
+            key=lambda r: r["time"],
         )
         series_opts = {**self._theme.get("area", {}), **options}
         if name:
@@ -431,6 +438,94 @@ class Chart:
         })
         return self
 
+    def stats_legend(
+        self,
+        metrics: Dict[str, Any],
+        position: str = "top-left",
+    ) -> "Chart":
+        """Overlay a performance-stats box on the chart.
+
+        Parameters
+        ----------
+        metrics : dict
+            Ordered dict of label → value pairs, e.g.::
+
+                chart.stats_legend({
+                    "Return": "+47.2%",
+                    "CAGR": "8.4%",
+                    "Sharpe": "1.42",
+                    "Max DD": "-12.3%",
+                })
+
+        position : str
+            Corner anchor: ``"top-left"`` (default), ``"top-right"``,
+            ``"bottom-left"``, ``"bottom-right"``.
+        """
+        self._stats_legend = {"metrics": dict(metrics), "position": position}
+        return self
+
+    def threshold_control(
+        self,
+        df: pd.DataFrame,
+        threshold: float = 0.0,
+        min_val: float = -0.05,
+        max_val: float = 0.05,
+        step: float = 0.001,
+        value_col: Optional[str] = None,
+        series_index: int = 0,
+        buy_color: Optional[str] = None,
+        sell_color: Optional[str] = None,
+    ) -> "Chart":
+        """Embed an interactive threshold slider that rebuilds buy/sell markers in real time.
+
+        Fully self-contained in the rendered HTML — no Python callbacks needed.
+        Drag the slider → JS recomputes entry/exit markers on the live chart instantly.
+
+        Usage::
+
+            chart = (
+                Chart(theme="dark", height=400)
+                .candlestick(df)
+                .threshold_control(pred_cum, threshold=0.0, min_val=-0.05, max_val=0.05, step=0.001)
+            )
+
+        Parameters
+        ----------
+        df : DataFrame
+            Time-series of signal/predicted-return values.
+        threshold : float
+            Initial threshold (default 0.0).  Values >= threshold → long.
+        min_val / max_val : float
+            Slider range endpoints.
+        step : float
+            Slider granularity (e.g. 0.001 → 3 decimal places).
+        series_index : int
+            Index of the series to attach markers to (default 0 = first series).
+        """
+        df = self._prepare_time(df)
+        vcol = self._find_value_col(df, value_col)
+        data = (
+            df[["time", vcol]]
+            .rename(columns={vcol: "value"})
+            .dropna(subset=["value"])
+            .to_dict("records")
+        )
+        up_clr = buy_color or self._theme.get("candlestick", {}).get("upColor", "#26a69a")
+        dn_clr = sell_color or self._theme.get("candlestick", {}).get("downColor", "#ef5350")
+        decimals = max(0, -int(math.floor(math.log10(step)))) if step > 0 else 3
+        self._threshold_config = {
+            "data": data,
+            "threshold": threshold,
+            "min_val": min_val,
+            "max_val": max_val,
+            "step": step,
+            "decimals": decimals,
+            "series_index": series_index,
+            "buy_color": up_clr,
+            "sell_color": dn_clr,
+        }
+        return self
+
     # ── Build HTML ────────────────────────────────────────────────────────
 
     def _build_chart_options(self) -> dict:
@@ -525,6 +620,135 @@ class Chart:
             if self._theme_name not in ("dark", "midnight", "distfit"):
                 _logo_invert = "filter:invert(1);"
 
+        # ── Threshold slider components ───────────────────────────────────
+        slider_html = ""
+        slider_js = ""
+        slider_extra_height = 0
+        if self._threshold_config:
+            tc = self._threshold_config
+            dec = tc["decimals"]
+            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+            bar_bg = "rgba(0,0,0,0.55)" if is_dark_bg else "rgba(255,255,255,0.72)"
+            lbl_c = "rgba(255,255,255,0.88)" if is_dark_bg else "rgba(0,0,0,0.78)"
+            cnt_c = "rgba(255,255,255,0.48)" if is_dark_bg else "rgba(0,0,0,0.42)"
+            thr0 = tc["threshold"]
+            svar = f"s{tc['series_index']}"
+            tdata_json = self._json(tc["data"])
+            slider_extra_height = 36
+            self._slider_extra_height = slider_extra_height
+            slider_html = (
+                f'<div id="th-bar" style="display:flex;align-items:center;justify-content:center;'
+                f'gap:10px;background:transparent;padding:6px 16px;white-space:nowrap;'
+                f'height:{slider_extra_height}px">'
+                f'<span id="th-label" style="color:{lbl_c};'
+                f"font:11px/1 'SF Mono','Consolas',monospace;min-width:72px\">"
+                f'\u03b8\u00a0=\u00a0{thr0:.{dec}f}</span>'
+                f'<input id="th-slider" type="range" '
+                f'min="{tc["min_val"]}" max="{tc["max_val"]}" step="{tc["step"]}" '
+                f'value="{thr0}" '
+                f'style="width:220px;cursor:pointer;accent-color:{tc["buy_color"]}">'
+                f'<span id="th-count" style="color:{cnt_c};font:11px/1 sans-serif;'
+                f'min-width:60px;text-align:right"></span>'
+                f'</div>'
+            )
+            # Parse shading color from buy_color hex
+            bc = tc["buy_color"].lstrip("#")
+            sr, sg, sb = int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16)
+            shade_fill = f"rgba({sr},{sg},{sb},0.10)"
+            shade_line = f"rgba({sr},{sg},{sb},0.25)"
+
+            slider_js = "\n".join([
+                "    // ── Threshold slider + position shading ──────────────────────",
+                f"    const _td = {tdata_json};",
+                f'    const _tBuy = "{tc["buy_color"]}";',
+                f'    const _tSell = "{tc["sell_color"]}";',
+                f"    const _tDec = {dec};",
+                "",
+                "    // Shading area series (position overlay)",
+                "    const _shadeSeries = chart.addSeries(LightweightCharts.AreaSeries, {",
+                '        priceScaleId: "_thShade",',
+                "        lineWidth: 1,",
+                f'        lineColor: "{shade_line}",',
+                "        lineType: 2,",
+                f'        topColor: "{shade_fill}",',
+                '        bottomColor: "transparent",',
+                "        crosshairMarkerVisible: false,",
+                "        pointMarkersVisible: false,",
+                "        lastValueVisible: false,",
+                "        priceLineVisible: false,",
+                "    });",
+                '    chart.priceScale("_thShade").applyOptions({visible:false,scaleMargins:{top:0,bottom:0}});',
+                "",
+                "    function _buildShade(thr) {",
+                "        const d = []; let on = false;",
+                "        for (let i = 0; i < _td.length; i++) {",
+                "            const above = _td[i].value >= thr;",
+                "            if (above && !on) on = true;",
+                "            else if (!above && on) on = false;",
+                "            d.push({time: _td[i].time, value: on ? 1 : 0});",
+                "        }",
+                "        return d;",
+                "    }",
+                "",
+                "    function _mkrs(thr) {",
+                "        const m = []; let on = false;",
+                "        for (let i = 0; i < _td.length; i++) {",
+                "            const a = _td[i].value >= thr;",
+                '            if (a && !on) { m.push({time:_td[i].time,position:"belowBar",shape:"arrowUp",color:_tBuy,text:""}); on=true; }',
+                '            else if (!a && on) { m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:""}); on=false; }',
+                "        }",
+                "        return m;",
+                "    }",
+                "",
+                f"    const _thP = LightweightCharts.createSeriesMarkers({svar}, _mkrs({thr0}));",
+                f"    _shadeSeries.setData(_buildShade({thr0}));",
+                "    (function() {",
+                f"        const m0 = _mkrs({thr0});",
+                '        document.getElementById("th-count").textContent = m0.filter(x=>x.shape==="arrowUp").length + " signals";',
+                "    })();",
+                '    document.getElementById("th-slider").addEventListener("input", function() {',
+                "        const thr = parseFloat(this.value);",
+                '        document.getElementById("th-label").textContent = "\\u03b8\\u00a0=\\u00a0" + thr.toFixed(_tDec);',
+                "        const m = _mkrs(thr);",
+                "        _thP.setMarkers(m);",
+                "        _shadeSeries.setData(_buildShade(thr));",
+                '        document.getElementById("th-count").textContent = m.filter(x=>x.shape==="arrowUp").length + " signals";',
+                "    });",
+            ])
+
+        # ── Stats legend overlay ──────────────────────────────────────────
+        stats_html = ""
+        if self._stats_legend:
+            sl = self._stats_legend
+            pos = sl["position"]
+            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+            box_bg = "rgba(0,0,0,0.52)" if is_dark_bg else "rgba(255,255,255,0.72)"
+            lbl_c  = "rgba(255,255,255,0.55)" if is_dark_bg else "rgba(0,0,0,0.45)"
+            val_c  = "rgba(255,255,255,0.92)" if is_dark_bg else "rgba(0,0,0,0.88)"
+            corner_css = {
+                "top-left":     "top:8px;left:8px",
+                "top-right":    "top:8px;right:8px",
+                "bottom-left":  "bottom:8px;left:8px",
+                "bottom-right": "bottom:8px;right:8px",
+            }.get(pos, "top:8px;left:8px")
+            rows = "".join(
+                f'<tr>'
+                f'<td style="color:{lbl_c};padding:1px 8px 1px 0;white-space:nowrap">'
+                f'{html_module.escape(str(k))}</td>'
+                f'<td style="color:{val_c};text-align:right;font-weight:600">'
+                f'{html_module.escape(str(v))}</td>'
+                f'</tr>'
+                for k, v in sl["metrics"].items()
+            )
+            stats_html = (
+                f'<div style="position:absolute;{corner_css};z-index:6;'
+                f'background:{box_bg};backdrop-filter:blur(4px);'
+                f'border-radius:6px;padding:6px 10px;pointer-events:none;">'
+                f'<table style="border-collapse:collapse;'
+                f'font:11px/1.6 \'SF Mono\',\'Consolas\',monospace">'
+                f'{rows}</table></div>'
+            )
+
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -532,21 +756,24 @@ class Chart:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{{bg_css}overflow:hidden;position:relative;border-radius:12px}}
+body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self._height + 28 + slider_extra_height}px}}
 #fc{{width:{width_css};height:{self._height}px;position:relative;z-index:1}}
 #err{{position:absolute;top:0;left:0;color:red;font-size:11px;z-index:9999;padding:4px;background:rgba(0,0,0,0.9);display:none}}
-#signum-logo{{position:absolute;left:12px;bottom:-20px;z-index:5;opacity:0.6;pointer-events:none;{_logo_invert}}}
+#signum-logo{{position:absolute;right:12px;bottom:4px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
 {bg_svg}
 <div id="fc"></div>
+{stats_html}
 <div id="err"></div>
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="24" height="24" alt="Signum">' if self._logo else ''}
+{slider_html}
+{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
 try {{
     const chart = LightweightCharts.createChart(document.getElementById('fc'), {chart_opts});
     {series_js}
     chart.timeScale().fitContent();
+    {slider_js}
     window.addEventListener('resize', () => chart.timeScale().fitContent());
 }} catch(e) {{
     var el = document.getElementById('err');
@@ -563,7 +790,8 @@ try {{
         import base64
         chart_html = self._build_html()
         b64 = base64.b64encode(chart_html.encode("utf-8")).decode("ascii")
-        h = self._height + 30
+        extra = getattr(self, "_slider_extra_height", 0)
+        h = self._height + 30 + extra
         uid = f"fc{id(self)}"
         return (
             f'<div id="{uid}" style="width:100%;height:{h}px;border-radius:12px;overflow:hidden;">'

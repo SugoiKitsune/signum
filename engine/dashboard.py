@@ -96,6 +96,9 @@ class Dashboard:
         price_pane: int = 0,
         buy_color: Optional[str] = None,
         sell_color: Optional[str] = None,
+        daily_returns: Optional[pd.Series] = None,
+        bh_returns: Optional[pd.Series] = None,
+        equity_pane: Optional[int] = None,
     ) -> "Dashboard":
         """Add an interactive threshold slider to the dashboard.
 
@@ -107,6 +110,10 @@ class Dashboard:
         df : DataFrame with time + value columns (signal series).
         threshold : initial threshold value.
         price_pane : index of the pane to add markers/shading to (default 0).
+        daily_returns : optional pd.Series of daily strategy returns (same index as df).
+            When provided, the slider will live-update an equity curve + stats legend.
+        bh_returns : optional pd.Series of daily buy-and-hold returns for comparison.
+        equity_pane : pane index that contains the equity/area series to update live.
         """
         time_col = Chart._detect_time_col(df)
         df = df.copy()
@@ -139,6 +146,20 @@ class Dashboard:
         up_clr = buy_color or self._theme.get("candlestick", {}).get("upColor", "#26a69a")
         dn_clr = sell_color or self._theme.get("candlestick", {}).get("downColor", "#ef5350")
         decimals = max(0, -int(math.floor(math.log10(step)))) if step > 0 else 3
+
+        # Prepare daily returns arrays for live equity computation (aligned to signal data)
+        ret_data = None
+        bh_data = None
+        if daily_returns is not None:
+            ret_series = daily_returns.fillna(0)
+            # Align to the signal dates
+            ret_df = pd.DataFrame({"time": df["time"], "ret": ret_series.values if len(ret_series) == len(df) else ret_series.reindex(pd.RangeIndex(len(df))).fillna(0).values})
+            ret_data = ret_df[["time", "ret"]].to_dict("records")
+        if bh_returns is not None:
+            bh_series = bh_returns.fillna(0)
+            bh_df_aligned = pd.DataFrame({"time": df["time"], "ret": bh_series.values if len(bh_series) == len(df) else bh_series.reindex(pd.RangeIndex(len(df))).fillna(0).values})
+            bh_data = bh_df_aligned[["time", "ret"]].to_dict("records")
+
         self._threshold_config = {
             "data": data,
             "threshold": threshold,
@@ -149,6 +170,9 @@ class Dashboard:
             "price_pane": price_pane,
             "buy_color": up_clr,
             "sell_color": dn_clr,
+            "ret_data": ret_data,
+            "bh_data": bh_data,
+            "equity_pane": equity_pane,
         }
         return self
 
@@ -350,6 +374,91 @@ class Dashboard:
                 "",
                 f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}));",
                 f"    _shadeSeries.setData(_buildShade({thr0}));",
+                "",
+            ] + ([] if not tc.get("ret_data") else [
+                "    // ── Live equity + stats ──────────────────────────────────────",
+                f"    const _rets = {json.dumps(tc['ret_data'], separators=(',', ':'))};",
+                f"    const _bhRets = {json.dumps(tc.get('bh_data') or [], separators=(',', ':'))};",
+                f"    const _eqPaneIdx = {tc['equity_pane'] if tc.get('equity_pane') is not None else -1};",
+                "    const _eqSeries  = _eqPaneIdx >= 0 ? firstSeries[_eqPaneIdx] : null;",
+                "    // second series in equity pane = b&h line (index 1)",
+                f"    const _bhSeries  = _eqPaneIdx >= 0 ? (typeof p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 !== 'undefined' ? p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 : null) : null;",
+                "",
+                "    // Stats overlay element — injected into equity pane's container div",
+                "    let _statsEl = null;",
+                "    if (_eqPaneIdx >= 0) {",
+                f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
+                "        _statsEl = document.createElement('div');",
+                f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
+                f"background:{'rgba(0,0,0,0.52)' if is_dark else 'rgba(255,255,255,0.72)'};"
+                f"backdrop-filter:blur(4px);border-radius:6px;padding:6px 10px;pointer-events:none;"
+                f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
+                "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
+                "    }",
+                "",
+                "    function _buildEquity(thr) {",
+                "        // position = 1 when signal >= thr, held until signal drops below",
+                "        let pos = 0, eq = 100, bh = 100;",
+                "        const eqData = [], bhData = [];",
+                "        let totRet=0,n=0,sumR=0,sumR2=0,peak=100,maxDD=0;",
+                "        let wins=0,tradesN=0;",
+                "        const hasBh = _bhRets.length === _rets.length;",
+                "        for (let i = 0; i < _rets.length; i++) {",
+                "            const sig = _td[i] ? _td[i].value : 0;",
+                "            pos = sig >= thr ? 1 : 0;",
+                "            const r = _rets[i].ret * pos;",
+                "            eq *= (1 + r);",
+                "            if (hasBh) bh *= (1 + _bhRets[i].ret);",
+                "            eqData.push({time: _rets[i].time, value: eq});",
+                "            if (hasBh) bhData.push({time: _bhRets[i].time, value: bh});",
+                "            if (pos) { sumR += r; sumR2 += r*r; n++; if(r>0) wins++; tradesN++; }",
+                "            if (eq > peak) peak = eq;",
+                "            const dd = (eq - peak) / peak;",
+                "            if (dd < maxDD) maxDD = dd;",
+                "        }",
+                "        const annR = n > 0 ? sumR / _rets.length * 252 : 0;",
+                "        const annV = n > 0 ? Math.sqrt((sumR2/_rets.length - Math.pow(sumR/_rets.length,2)) * 252) : 1;",
+                "        const sharpe = annV > 0 ? annR / annV : 0;",
+                "        const nYears = _rets.length / 252;",
+                "        const cagr = Math.pow(eq/100, 1/nYears) - 1;",
+                "        const totalRet = eq/100 - 1;",
+                "        const bhRet = hasBh ? bh/100 - 1 : null;",
+                "        const wr = tradesN > 0 ? wins/tradesN : 0;",
+                "        const timeMkt = n / _rets.length;",
+                "        // Re-index to 100",
+                "        const s = 100 / eqData[0].value;",
+                "        eqData.forEach(d => d.value *= s);",
+                "        if (hasBh) { const bs = 100/bhData[0].value; bhData.forEach(d => d.value *= bs); }",
+                "        return {eqData, bhData, totalRet, bhRet, cagr, sharpe, maxDD, wr, timeMkt};",
+                "    }",
+                "",
+                "    function _fmtPct(v, showSign=true) {",
+                "        return (showSign && v>0?'+':'') + (v*100).toFixed(1)+'%';",
+                "    }",
+                "",
+                "    function _updateStats(res) {",
+                "        if (!_statsEl) return;",
+                f"        const lbl = 'color:{'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'}';",
+                f"        const val = 'color:{'rgba(255,255,255,0.92)' if is_dark else 'rgba(0,0,0,0.88)'};font-weight:600';",
+                "        const rows = [",
+                "            ['Return', _fmtPct(res.totalRet)],",
+                "            res.bhRet !== null ? ['B&H', _fmtPct(res.bhRet)] : null,",
+                "            ['CAGR',   _fmtPct(res.cagr)],",
+                "            ['Sharpe', res.sharpe.toFixed(2)],",
+                "            ['Max DD', _fmtPct(res.maxDD, false)],",
+                "            ['Win Rate', _fmtPct(res.wr, false)],",
+                "            ['In Mkt',  _fmtPct(res.timeMkt, false)],",
+                "        ].filter(Boolean);",
+                "        _statsEl.innerHTML = '<table style=\"border-collapse:collapse\">' +",
+                "            rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('')",
+                "            + '</table>';",
+                "    }",
+                "",
+                f"    const _eq0 = _buildEquity({thr0});",
+                "    if (_eqSeries) _eqSeries.setData(_eq0.eqData);",
+                "    if (_bhSeries && _eq0.bhData.length) _bhSeries.setData(_eq0.bhData);",
+                "    _updateStats(_eq0);",
+            ]) + [
                 "    (function() {",
                 f"        const m0 = _mkrs({thr0});",
                 '        document.getElementById("th-count").textContent = m0.filter(x=>x.shape==="arrowUp").length + " signals";',
@@ -363,6 +472,12 @@ class Dashboard:
                 "        for (const pl of _thresholdLines) { pl.applyOptions({price: thr}); }",
                 '        for (const ss of _sigSeries) { ss.applyOptions({baseValue:{type:"price",price:thr}}); }',
                 '        document.getElementById("th-count").textContent = m.filter(x=>x.shape==="arrowUp").length + " signals";',
+                "        if (_rets && _rets.length) {",
+                "            const eq = _buildEquity(thr);",
+                "            if (_eqSeries) _eqSeries.setData(eq.eqData);",
+                "            if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData);",
+                "            _updateStats(eq);",
+                "        }",
                 "    });",
             ])
 
