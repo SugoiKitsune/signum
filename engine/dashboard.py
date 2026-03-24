@@ -1,4 +1,4 @@
-"""Dashboard - Multi-pane synchronized financial charts.
+﻿"""Dashboard - Multi-pane synchronized financial charts.
 
 Creates vertically stacked chart panes with synchronized time axes
 and crosshairs — the LC equivalent of Plotly make_subplots(shared_xaxes=True).
@@ -88,91 +88,133 @@ class Dashboard:
     def threshold_control(
         self,
         df: pd.DataFrame,
+        df2: Optional[pd.DataFrame] = None,
+        signal_mode: str = "above",
         threshold: float = 0.0,
         min_val: float = -0.05,
         max_val: float = 0.05,
         step: float = 0.001,
         value_col: Optional[str] = None,
+        value_col2: Optional[str] = None,
         price_pane: int = 0,
         buy_color: Optional[str] = None,
         sell_color: Optional[str] = None,
         daily_returns: Optional[pd.Series] = None,
         bh_returns: Optional[pd.Series] = None,
         equity_pane: Optional[int] = None,
+        invert: bool = False,
+        threshold2: Optional[float] = None,
     ) -> "Dashboard":
         """Add an interactive threshold slider to the dashboard.
 
-        Adds a signal pane showing the signal line + moving threshold,
-        shading on the price pane, and a slider below all panes.
-
         Parameters
         ----------
-        df : DataFrame with time + value columns (signal series).
-        threshold : initial threshold value.
-        price_pane : index of the pane to add markers/shading to (default 0).
-        daily_returns : optional pd.Series of daily strategy returns (same index as df).
-            When provided, the slider will live-update an equity curve + stats legend.
-        bh_returns : optional pd.Series of daily buy-and-hold returns for comparison.
-        equity_pane : pane index that contains the equity/area series to update live.
+        df : DataFrame with time + value columns (primary signal series).
+        df2 : Optional second signal DataFrame — required for ``signal_mode="crossover"``.
+        signal_mode : How the entry condition is evaluated against θ.
+            Operator strings (natural syntax):
+                ``">="``  — long when signal ≥ θ  (default)
+                ``">"``   — long when signal > θ
+                ``"<="``  — long when signal ≤ θ
+                ``"<"``   — long when signal < θ
+            Single-threshold named modes:
+                ``"above"``     — alias for ``">="``
+                ``"below"``     — alias for ``"<="``
+                ``"rising"``    — long when Δsignal ≥ θ  (positive slope)
+                ``"crossover"`` — long when (signal − signal2) ≥ θ  (needs *df2*)
+            Band modes (two sliders, require *threshold2*):
+                ``"within"``  / ``"between"`` / ``"band"`` —
+                    long when θ_lo ≤ signal ≤ θ_hi
+                ``"outside"`` / ``"beyond"`` —
+                    long when signal < θ_lo  OR  signal > θ_hi
+        threshold : lower bound (θ_lo) for band modes, or the single threshold for all other modes.
+        threshold2 : upper bound (θ_hi) for band modes only.  Ignored for other modes.
+            Defaults to ``threshold + 20 % of (max_val − min_val)`` when *None*.
+        min_val, max_val, step : slider range and granularity.
+        price_pane : pane index to add buy/sell arrows and background shading to (default 0).
+        daily_returns : daily strategy returns aligned 1:1 with *df* rows.
+        bh_returns : daily buy-and-hold returns for the comparison equity curve.
+        equity_pane : pane index that contains the equity area series to update live.
+        invert : **Deprecated** — use ``signal_mode="below"`` instead.
         """
-        time_col = Chart._detect_time_col(df)
-        df = df.copy()
-        if time_col == "__index__":
-            df["time"] = df.index
-        elif time_col != "time":
-            df["time"] = df[time_col]
-        if pd.api.types.is_datetime64_any_dtype(df["time"]):
-            df["time"] = df["time"].dt.strftime("%Y-%m-%d")
-        else:
-            df["time"] = pd.to_datetime(df["time"]).dt.strftime("%Y-%m-%d")
+        # Backward-compat: invert=True → signal_mode="below"
+        if invert and signal_mode == "above":
+            signal_mode = "below"
 
-        vcol = value_col
-        if not vcol:
-            for name in ("value", "close", "Close", "VALUE", "price", "Price"):
-                if name in df.columns:
-                    vcol = name
-                    break
-            if not vcol:
-                for col in df.columns:
-                    if col != "time" and pd.api.types.is_numeric_dtype(df[col]):
-                        vcol = col
+        def _parse_df(frame, vcol_hint):
+            tc_col = Chart._detect_time_col(frame)
+            frame = frame.copy()
+            if tc_col == "__index__":
+                frame["time"] = frame.index
+            elif tc_col != "time":
+                frame["time"] = frame[tc_col]
+            if pd.api.types.is_datetime64_any_dtype(frame["time"]):
+                frame["time"] = frame["time"].dt.strftime("%Y-%m-%d")
+            else:
+                frame["time"] = pd.to_datetime(frame["time"]).dt.strftime("%Y-%m-%d")
+            vc = vcol_hint
+            if not vc:
+                for name in ("value", "close", "Close", "VALUE", "price", "Price"):
+                    if name in frame.columns:
+                        vc = name
                         break
-        data = (
-            df[["time", vcol]]
-            .rename(columns={vcol: "value"})
-            .dropna(subset=["value"])
-            .to_dict("records")
-        )
-        up_clr = buy_color or self._theme.get("candlestick", {}).get("upColor", "#26a69a")
+            if not vc:
+                for col in frame.columns:
+                    if col != "time" and pd.api.types.is_numeric_dtype(frame[col]):
+                        vc = col
+                        break
+            return (
+                frame[["time", vc]]
+                .rename(columns={vc: "value"})
+                .dropna(subset=["value"])
+                .to_dict("records")
+            )
+
+        data  = _parse_df(df, value_col)
+        data2 = _parse_df(df2, value_col2) if (df2 is not None and signal_mode == "crossover") else None
+
+        up_clr = buy_color  or self._theme.get("candlestick", {}).get("upColor",   "#26a69a")
         dn_clr = sell_color or self._theme.get("candlestick", {}).get("downColor", "#ef5350")
         decimals = max(0, -int(math.floor(math.log10(step)))) if step > 0 else 3
 
-        # Prepare daily returns arrays for live equity computation (aligned to signal data)
         ret_data = None
-        bh_data = None
+        bh_data  = None
         if daily_returns is not None:
             ret_series = daily_returns.fillna(0)
-            # Align to the signal dates
-            ret_df = pd.DataFrame({"time": df["time"], "ret": ret_series.values if len(ret_series) == len(df) else ret_series.reindex(pd.RangeIndex(len(df))).fillna(0).values})
-            ret_data = ret_df[["time", "ret"]].to_dict("records")
+            n = len(data)
+            vals = (ret_series.values if len(ret_series) == n
+                    else ret_series.reindex(pd.RangeIndex(n)).fillna(0).values)
+            times = [r["time"] for r in data]
+            ret_data = [{"time": t, "ret": float(v)} for t, v in zip(times, vals)]
         if bh_returns is not None:
             bh_series = bh_returns.fillna(0)
-            bh_df_aligned = pd.DataFrame({"time": df["time"], "ret": bh_series.values if len(bh_series) == len(df) else bh_series.reindex(pd.RangeIndex(len(df))).fillna(0).values})
-            bh_data = bh_df_aligned[["time", "ret"]].to_dict("records")
+            n = len(data)
+            vals = (bh_series.values if len(bh_series) == n
+                    else bh_series.reindex(pd.RangeIndex(n)).fillna(0).values)
+            times = [r["time"] for r in data]
+            bh_data = [{"time": t, "ret": float(v)} for t, v in zip(times, vals)]
+
+        # Pad slider bounds slightly beyond data range for full selection
+        _pad = step * 3 if step > 0 else (max_val - min_val) * 0.02
+        min_val = round(min_val - _pad, decimals)
+        max_val = round(max_val + _pad, decimals)
 
         self._threshold_config = {
-            "data": data,
-            "threshold": threshold,
-            "min_val": min_val,
-            "max_val": max_val,
-            "step": step,
-            "decimals": decimals,
-            "price_pane": price_pane,
-            "buy_color": up_clr,
-            "sell_color": dn_clr,
-            "ret_data": ret_data,
-            "bh_data": bh_data,
+            "data":        data,
+            "data2":       data2,
+            "signal_mode": signal_mode,
+            "threshold":   threshold,
+            "min_val":     min_val,
+            "max_val":     max_val,
+            "step":        step,
+            "decimals":    decimals,
+            "price_pane":  price_pane,
+            "buy_color":   up_clr,
+            "sell_color":  dn_clr,
+            "ret_data":    ret_data,
+            "bh_data":     bh_data,
             "equity_pane": equity_pane,
+            "threshold2":  threshold2,
         }
         return self
 
@@ -286,13 +328,128 @@ class Dashboard:
             sr, sg, sb = int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16)
             shade_fill = f"rgba({sr},{sg},{sb},0.10)"
             shade_line = f"rgba({sr},{sg},{sb},0.25)"
+            dc = tc["sell_color"].lstrip("#")
+            sell_r, sell_g, sell_b = int(dc[0:2], 16), int(dc[2:4], 16), int(dc[4:6], 16)
+
+            # ── Signal mode — condition strings and JS precompute snippet ───
+            sm = tc.get("signal_mode", "above")
+
+            # Normalise operator aliases → canonical names
+            _op_alias = {
+                ">=": "above", ">": "above_strict", "<=": "below", "<": "below_strict",
+                "between": "within", "band": "within",
+                "beyond": "outside",
+            }
+            sm = _op_alias.get(sm, sm)
+
+            is_band_mode = False
+            if sm == "rising":
+                long_idx_cond  = "_delta[i] >= thr"
+                short_idx_cond = "false"
+                long_pos_cond  = "_delta[i] >= thr"
+                short_pos_cond = "false"
+                eq_pos_expr    = "_delta[i] >= thr ? 1 : 0"
+                precompute_js  = "    const _delta = _td.map((d,i) => i===0 ? 0 : d.value - _td[i-1].value);"
+                update_baseline = True
+                invert_colors  = False
+                show_neg_line  = False
+                thr_lbl_pfx    = "\\u0394\\u00a0\\u2265\\u00a0"
+                thr_lbl_init   = f"\u0394\u00a0\u2265\u00a0{thr0:.{dec}f}"
+            elif sm == "crossover":
+                _data2_json    = json.dumps(tc.get("data2") or [], separators=(",", ":"))
+                long_idx_cond  = "_spread[i] >= thr"
+                short_idx_cond = "false"
+                long_pos_cond  = "_spread[i] >= thr"
+                short_pos_cond = "false"
+                eq_pos_expr    = "_spread[i] >= thr ? 1 : 0"
+                precompute_js  = (
+                    f"    const _td2 = {_data2_json};\n"
+                    f"    const _spread = _td.map((d,i) => d.value - (_td2[i] ? _td2[i].value : 0));"
+                )
+                update_baseline = True
+                invert_colors  = False
+                show_neg_line  = False
+                thr_lbl_pfx    = "spread\\u00a0\\u2265\\u00a0"
+                thr_lbl_init   = f"spread\u00a0\u2265\u00a0{thr0:.{dec}f}"
+            elif sm in ("below", "below_strict"):
+                _op_sym = "<=" if sm == "below" else "<"
+                _js_op  = "<="  if sm == "below" else "<"
+                long_idx_cond  = f"_td[i].value {_js_op} thr"
+                short_idx_cond = "false"
+                long_pos_cond  = f"sig {_js_op} thr"
+                short_pos_cond = "false"
+                eq_pos_expr    = f"sig {_js_op} thr ? 1 : 0"
+                precompute_js  = ""
+                update_baseline = True
+                invert_colors  = True
+                show_neg_line  = False
+                thr_lbl_pfx    = f"\\u03b8\\u00a0{_op_sym}\\u00a0"
+                thr_lbl_init   = f"\u03b8\u00a0{_op_sym}\u00a0{thr0:.{dec}f}"
+            elif sm == "above_strict":
+                long_idx_cond  = "_td[i].value > thr"
+                short_idx_cond = "false"
+                long_pos_cond  = "sig > thr"
+                short_pos_cond = "false"
+                eq_pos_expr    = "sig > thr ? 1 : 0"
+                precompute_js  = ""
+                update_baseline = True
+                invert_colors  = False
+                show_neg_line  = False
+                thr_lbl_pfx    = "\\u03b8\\u00a0>\\u00a0"
+                thr_lbl_init   = f"\u03b8\u00a0>\u00a0{thr0:.{dec}f}"
+            elif sm == "within":
+                long_idx_cond  = "_td[i].value >= thr"   # dummy — band JS overrides
+                short_idx_cond = "false"
+                long_pos_cond  = "sig >= lo && sig <= hi"
+                short_pos_cond = "false"
+                eq_pos_expr    = "(sig >= lo && sig <= hi) ? 1 : 0"
+                precompute_js  = ""
+                update_baseline = False
+                invert_colors  = False
+                show_neg_line  = False
+                is_band_mode   = True
+                thr_lbl_pfx    = "\\u03b8_lo"          # unused for band
+                thr_lbl_init   = f"\u03b8_lo\u00a0{thr0:.{dec}f}"
+            elif sm == "outside":
+                long_idx_cond  = "_td[i].value < thr"    # dummy — band JS overrides
+                short_idx_cond = "false"
+                long_pos_cond  = "sig < lo || sig > hi"
+                short_pos_cond = "false"
+                eq_pos_expr    = "(sig < lo || sig > hi) ? 1 : 0"
+                precompute_js  = ""
+                update_baseline = False
+                invert_colors  = False
+                show_neg_line  = False
+                is_band_mode   = True
+                thr_lbl_pfx    = "\\u03b8_lo"          # unused for band
+                thr_lbl_init   = f"\u03b8_lo\u00a0{thr0:.{dec}f}"
+            else:  # "above" / ">=" (default)
+                long_idx_cond  = "_td[i].value >= thr"
+                short_idx_cond = "false"
+                long_pos_cond  = "sig >= thr"
+                short_pos_cond = "false"
+                eq_pos_expr    = "sig >= thr ? 1 : 0"
+                precompute_js  = ""
+                update_baseline = True
+                invert_colors  = False
+                show_neg_line  = False
+                thr_lbl_pfx    = "\\u03b8\\u00a0\\u2265\\u00a0"
+                thr_lbl_init   = f"\u03b8\u00a0\u2265\u00a0{thr0:.{dec}f}"
+
+            # Pre-resolved baseline colors (used only when update_baseline=True)
+            top_line_color = "rgba(120,120,120,0.4)"  if invert_colors else tc["buy_color"]
+            top_fill1      = "rgba(100,100,100,0.06)" if invert_colors else f"rgba({sr},{sg},{sb},0.28)"
+            top_fill2      = "rgba(100,100,100,0.01)" if invert_colors else f"rgba({sr},{sg},{sb},0.05)"
+            bot_line_color = tc["buy_color"]           if invert_colors else "rgba(100,100,100,0.28)"
+            bot_fill1      = f"rgba({sr},{sg},{sb},0.28)" if invert_colors else "rgba(100,100,100,0.01)"
+            bot_fill2      = f"rgba({sr},{sg},{sb},0.05)" if invert_colors else "rgba(100,100,100,0.06)"
 
             slider_html = (
                 f'<div id="th-bar" style="display:flex;align-items:center;justify-content:center;'
                 f'gap:10px;background:transparent;padding:6px 16px;white-space:nowrap;height:36px">'
                 f'<span id="th-label" style="color:{lbl_c};'
                 f"font:11px/1 'SF Mono','Consolas',monospace;min-width:72px\">"
-                f'\u03b8\u00a0=\u00a0{thr0:.{dec}f}</span>'
+                f'{thr_lbl_init}</span>'
                 f'<input id="th-slider" type="range" '
                 f'min="{tc["min_val"]}" max="{tc["max_val"]}" step="{tc["step"]}" '
                 f'value="{thr0}" '
@@ -301,7 +458,8 @@ class Dashboard:
                 f'min-width:60px;text-align:right"></span>'
                 f'</div>'
             )
-            divs_html += "\n" + slider_html
+            if not is_band_mode:
+                divs_html += "\n" + slider_html
 
             slider_js = "\n".join([
                 "",
@@ -310,8 +468,10 @@ class Dashboard:
                 f'    const _tBuy = "{tc["buy_color"]}";',
                 f'    const _tSell = "{tc["sell_color"]}";',
                 f"    const _tDec = {dec};",
+                f'    const _thrLblPfx = "{thr_lbl_pfx}";',
                 "",
-                "    // Shading area on price pane",
+            ] + ([precompute_js, ""] if precompute_js else []) + [
+                "    // Long shade (green) on price pane; short shade (red) when signal <= -thr",
                 f"    const _shadeSeries = {price_chart}.addSeries(LightweightCharts.AreaSeries, {{",
                 '        priceScaleId: "_thShade",',
                 "        lineWidth: 1,",
@@ -325,55 +485,96 @@ class Dashboard:
                 "        priceLineVisible: false,",
                 "    });",
                 f'    {price_chart}.priceScale("_thShade").applyOptions({{visible:false,scaleMargins:{{top:0,bottom:0}}}});',
+                f"    const _shadeSellSeries = {price_chart}.addSeries(LightweightCharts.AreaSeries, {{",
+                '        priceScaleId: "_thShadeSell",',
+                "        lineWidth: 1,",
+                f'        lineColor: "rgba({sell_r},{sell_g},{sell_b},0.25)",',
+                "        lineType: 2,",
+                f'        topColor: "rgba({sell_r},{sell_g},{sell_b},0.10)",',
+                '        bottomColor: "transparent",',
+                "        crosshairMarkerVisible: false,",
+                "        pointMarkersVisible: false,",
+                "        lastValueVisible: false,",
+                "        priceLineVisible: false,",
+                "    });",
+                f'    {price_chart}.priceScale("_thShadeSell").applyOptions({{visible:false,scaleMargins:{{top:0,bottom:0}}}});',
                 "",
-                "    // Signal line pane — grey out below threshold, colored above",
+                "    // Signal line pane — colour by threshold position (above/below modes only)",
                 "    const _thresholdLines = [];",
+                "    const _thresholdNegLines = [];",
                 "    const _sigSeries = [];",
                 "    for (let ci = 0; ci < charts.length; ci++) {",
                 f"        if (ci === {pp}) continue;",
+                f"        if (ci === {tc['equity_pane'] if tc.get('equity_pane') is not None else -1}) continue;",
                 "        const fs = firstSeries[ci];",
                 "        if (fs) {",
                 "            try {",
-                "                // Override baseline: above θ = colored, below θ = grey",
+            ] + ([] if not update_baseline else ([
+                "                // Override baseline: in-market side = colored, out = grey",
                 "                fs.applyOptions({",
                 f'                    baseValue: {{type:"price",price:{thr0}}},',
-                f'                    topLineColor: "{tc["buy_color"]}",',
-                f'                    topFillColor1: "rgba({sr},{sg},{sb},0.28)",',
-                f'                    topFillColor2: "rgba({sr},{sg},{sb},0.05)",',
-                '                    bottomLineColor: "rgba(120,120,120,0.4)",',
-                '                    bottomFillColor1: "rgba(120,120,120,0.05)",',
-                '                    bottomFillColor2: "rgba(120,120,120,0.18)",',
+                f'                    topLineColor: "{top_line_color}",',
+                f'                    topFillColor1: "{top_fill1}",',
+                f'                    topFillColor2: "{top_fill2}",',
+                f'                    bottomLineColor: "{bot_line_color}",',
+                f'                    bottomFillColor1: "{bot_fill1}",',
+                f'                    bottomFillColor2: "{bot_fill2}",',
                 "                });",
                 "                _sigSeries.push(fs);",
                 f'                const pl = fs.createPriceLine({{price:{thr0},title:"\\u03b8",color:"{tc["buy_color"]}",lineWidth:1,lineStyle:2,axisLabelVisible:true}});',
                 "                _thresholdLines.push(pl);",
+            ] + ([] if not show_neg_line else [
+                f'                const plN = fs.createPriceLine({{price:{-thr0},title:"-\\u03b8",color:"{tc["sell_color"]}",lineWidth:1,lineStyle:2,axisLabelVisible:true}});',
+                "                _thresholdNegLines.push(plN);",
+            ]))) + [
                 "            } catch(e) {}",
                 "        }",
                 "    }",
                 "",
                 "    function _buildShade(thr) {",
-                "        const d = []; let on = false;",
+                "        const d = [];",
                 "        for (let i = 0; i < _td.length; i++) {",
-                "            const above = _td[i].value >= thr;",
-                "            if (above && !on) on = true;",
-                "            else if (!above && on) on = false;",
-                "            d.push({time: _td[i].time, value: on ? 1 : 0});",
+                f"            const above = {long_idx_cond};",
+                "            d.push({time: _td[i].time, value: above ? 1 : 0});",
+                "        }",
+                "        return d;",
+                "    }",
+                "    function _buildShadeSell(thr) {",
+                "        const d = [];",
+                "        for (let i = 0; i < _td.length; i++) {",
+                f"            const below = {short_idx_cond};",
+                "            d.push({time: _td[i].time, value: below ? 1 : 0});",
                 "        }",
                 "        return d;",
                 "    }",
                 "",
                 "    function _mkrs(thr) {",
-                "        const m = []; let on = false;",
+                "        const m = []; let longOn=false, shortOn=false;",
                 "        for (let i = 0; i < _td.length; i++) {",
-                "            const a = _td[i].value >= thr;",
-                '            if (a && !on) { m.push({time:_td[i].time,position:"belowBar",shape:"arrowUp",color:_tBuy,text:""}); on=true; }',
-                '            else if (!a && on) { m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:""}); on=false; }',
+                "            const sig = _td[i].value;",
+                f"            const goLong  = {long_pos_cond};",
+                f"            const goShort = {short_pos_cond};",
+                "            if (goLong && !longOn) {",
+                '                m.push({time:_td[i].time,position:"belowBar",shape:"arrowUp",color:_tBuy,text:""});',
+                "                longOn=true; if(shortOn) shortOn=false;",
+                "            } else if (!goLong && longOn) {",
+                '                m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:""});',
+                "                longOn=false;",
+                "            }",
+                "            if (!goLong && goShort && !shortOn) {",
+                '                m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:"S"});',
+                "                shortOn=true;",
+                "            } else if (!goShort && shortOn) {",
+                '                m.push({time:_td[i].time,position:"belowBar",shape:"circle",color:"rgba(150,150,150,0.8)",text:"C"});',
+                "                shortOn=false;",
+                "            }",
                 "        }",
                 "        return m;",
                 "    }",
                 "",
                 f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}));",
                 f"    _shadeSeries.setData(_buildShade({thr0}));",
+                f"    _shadeSellSeries.setData(_buildShadeSell({thr0}));",
                 "",
             ] + ([] if not tc.get("ret_data") else [
                 "    // ── Live equity + stats ──────────────────────────────────────",
@@ -390,28 +591,28 @@ class Dashboard:
                 f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
                 "        _statsEl = document.createElement('div');",
                 f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
-                f"background:{'rgba(0,0,0,0.52)' if is_dark else 'rgba(255,255,255,0.72)'};"
-                f"backdrop-filter:blur(4px);border-radius:6px;padding:6px 10px;pointer-events:none;"
+                f"background:{'rgba(0,0,0,0.18)' if is_dark else 'rgba(255,255,255,0.22)'};"
+                f"backdrop-filter:blur(2px);border-radius:6px;padding:6px 10px;pointer-events:none;"
                 f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
                 "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
                 "    }",
                 "",
                 "    function _buildEquity(thr) {",
-                "        // position = 1 when signal >= thr, held until signal drops below",
                 "        let pos = 0, eq = 100, bh = 100;",
                 "        const eqData = [], bhData = [];",
-                "        let totRet=0,n=0,sumR=0,sumR2=0,peak=100,maxDD=0;",
-                "        let wins=0,tradesN=0;",
+                "        let n=0,sumR=0,sumR2=0,peak=100,maxDD=0;",
+                "        let wins=0,tradesN=0,nLong=0,nShort=0;",
                 "        const hasBh = _bhRets.length === _rets.length;",
                 "        for (let i = 0; i < _rets.length; i++) {",
                 "            const sig = _td[i] ? _td[i].value : 0;",
-                "            pos = sig >= thr ? 1 : 0;",
+                f"            pos = {eq_pos_expr};",
                 "            const r = _rets[i].ret * pos;",
                 "            eq *= (1 + r);",
                 "            if (hasBh) bh *= (1 + _bhRets[i].ret);",
                 "            eqData.push({time: _rets[i].time, value: eq});",
                 "            if (hasBh) bhData.push({time: _bhRets[i].time, value: bh});",
-                "            if (pos) { sumR += r; sumR2 += r*r; n++; if(r>0) wins++; tradesN++; }",
+                "            if (pos !== 0) { sumR += r; sumR2 += r*r; n++; if(r>0) wins++; tradesN++; }",
+                "            if (pos === 1) nLong++; else if (pos === -1) nShort++;",
                 "            if (eq > peak) peak = eq;",
                 "            const dd = (eq - peak) / peak;",
                 "            if (dd < maxDD) maxDD = dd;",
@@ -419,17 +620,19 @@ class Dashboard:
                 "        const annR = n > 0 ? sumR / _rets.length * 252 : 0;",
                 "        const annV = n > 0 ? Math.sqrt((sumR2/_rets.length - Math.pow(sumR/_rets.length,2)) * 252) : 1;",
                 "        const sharpe = annV > 0 ? annR / annV : 0;",
-                "        const nYears = _rets.length / 252;",
-                "        const cagr = Math.pow(eq/100, 1/nYears) - 1;",
-                "        const totalRet = eq/100 - 1;",
-                "        const bhRet = hasBh ? bh/100 - 1 : null;",
                 "        const wr = tradesN > 0 ? wins/tradesN : 0;",
                 "        const timeMkt = n / _rets.length;",
+                "        const longPct = nLong / _rets.length;",
+                "        const shortPct = nShort / _rets.length;",
                 "        // Re-index to 100",
                 "        const s = 100 / eqData[0].value;",
                 "        eqData.forEach(d => d.value *= s);",
                 "        if (hasBh) { const bs = 100/bhData[0].value; bhData.forEach(d => d.value *= bs); }",
-                "        return {eqData, bhData, totalRet, bhRet, cagr, sharpe, maxDD, wr, timeMkt};",
+                "        const totalRet = eqData[eqData.length-1].value / 100 - 1;",
+                "        const bhRet = hasBh ? bhData[bhData.length-1].value / 100 - 1 : null;",
+                "        const nYears = _rets.length / 252;",
+                "        const cagr = Math.pow(eqData[eqData.length-1].value/100, 1/nYears) - 1;",
+                "        return {eqData, bhData, totalRet, bhRet, cagr, sharpe, maxDD, wr, timeMkt, longPct, shortPct};",
                 "    }",
                 "",
                 "    function _fmtPct(v, showSign=true) {",
@@ -448,6 +651,8 @@ class Dashboard:
                 "            ['Max DD', _fmtPct(res.maxDD, false)],",
                 "            ['Win Rate', _fmtPct(res.wr, false)],",
                 "            ['In Mkt',  _fmtPct(res.timeMkt, false)],",
+                "            res.shortPct > 0 ? ['  Long', _fmtPct(res.longPct, false)] : null,",
+                "            res.shortPct > 0 ? ['  Short', _fmtPct(res.shortPct, false)] : null,",
                 "        ].filter(Boolean);",
                 "        _statsEl.innerHTML = '<table style=\"border-collapse:collapse\">' +",
                 "            rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('')",
@@ -465,12 +670,16 @@ class Dashboard:
                 "    })();",
                 '    document.getElementById("th-slider").addEventListener("input", function() {',
                 "        const thr = parseFloat(this.value);",
-                '        document.getElementById("th-label").textContent = "\\u03b8\\u00a0=\\u00a0" + thr.toFixed(_tDec);',
+                '        document.getElementById("th-label").textContent = _thrLblPfx + thr.toFixed(_tDec);',
                 "        const m = _mkrs(thr);",
                 "        _thP.setMarkers(m);",
                 "        _shadeSeries.setData(_buildShade(thr));",
+                "        _shadeSellSeries.setData(_buildShadeSell(thr));",
                 "        for (const pl of _thresholdLines) { pl.applyOptions({price: thr}); }",
+                "        for (const pl of _thresholdNegLines) { pl.applyOptions({price: -thr}); }",
+            ] + ([
                 '        for (const ss of _sigSeries) { ss.applyOptions({baseValue:{type:"price",price:thr}}); }',
+            ] if update_baseline else []) + [
                 '        document.getElementById("th-count").textContent = m.filter(x=>x.shape==="arrowUp").length + " signals";',
                 "        if (_rets && _rets.length) {",
                 "            const eq = _buildEquity(thr);",
@@ -480,6 +689,332 @@ class Dashboard:
                 "        }",
                 "    });",
             ])
+
+            # ── Band mode override (two-slider HTML + JS) ─────────────────────
+            if is_band_mode:
+                _thr2 = tc.get("threshold2")
+                if _thr2 is None:
+                    _thr2 = round(thr0 + (tc["max_val"] - tc["min_val"]) * 0.2, dec)
+                _thr2 = max(tc["min_val"], min(tc["max_val"], _thr2))
+                _band_is_outside  = (sm == "outside")
+                _band_shade_cond  = "v < lo || v > hi"  if _band_is_outside else "v >= lo && v <= hi"
+                _band_pos_cond    = "sig < lo || sig > hi" if _band_is_outside else "sig >= lo && sig <= hi"
+                _band_eq_expr     = "(sig < lo || sig > hi) ? 1 : 0" if _band_is_outside else "(sig >= lo && sig <= hi) ? 1 : 0"
+                _lo_lbl           = f"\u03b8_lo\u00a0{thr0:.{dec}f}"
+                _hi_lbl           = f"\u03b8_hi\u00a0{_thr2:.{dec}f}"
+                # Custom series plugin: renders green/grey segments via Canvas2D
+                divs_html += "\n" + (
+                    f'<div id="th-bar" style="display:flex;align-items:center;justify-content:center;'
+                    f'gap:8px;background:transparent;padding:6px 16px;white-space:nowrap;height:36px">'
+                    f'<span id="th-lo-label" style="color:{lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:76px\">"
+                    f'{_lo_lbl}</span>'
+                    f'<input id="th-lo-slider" type="range" '
+                    f'min="{tc["min_val"]}" max="{tc["max_val"]}" step="{tc["step"]}" '
+                    f'value="{thr0}" '
+                    f'style="width:155px;cursor:pointer;accent-color:{tc["buy_color"]}">'
+                    f'<span id="th-hi-label" style="color:{lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:76px\">"
+                    f'{_hi_lbl}</span>'
+                    f'<input id="th-hi-slider" type="range" '
+                    f'min="{tc["min_val"]}" max="{tc["max_val"]}" step="{tc["step"]}" '
+                    f'value="{_thr2}" '
+                    f'style="width:155px;cursor:pointer;accent-color:{tc["buy_color"]}">'
+                    f'<span id="th-count" style="color:{cnt_c};font:11px/1 sans-serif;'
+                    f'min-width:60px;text-align:right"></span>'
+                    f'</div>'
+                )
+                slider_js = "\n".join([
+                    "",
+                    "    // \u2500\u2500 Dashboard band-threshold slider (two sliders) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+                    f"    const _td = {tdata_json};",
+                    f'    const _tBuy = "{tc["buy_color"]}";',
+                    f'    const _tSell = "{tc["sell_color"]}";',
+                    f"    const _tDec = {dec};",
+                    "",
+                    f"    const _shadeSeries = {price_chart}.addSeries(LightweightCharts.AreaSeries, {{",
+                    '        priceScaleId: "_thShade",',
+                    "        lineWidth: 1,",
+                    f'        lineColor: "{shade_line}",',
+                    "        lineType: 2,",
+                    f'        topColor: "{shade_fill}",',
+                    '        bottomColor: "transparent",',
+                    "        crosshairMarkerVisible: false,",
+                    "        pointMarkersVisible: false,",
+                    "        lastValueVisible: false,",
+                    "        priceLineVisible: false,",
+                    "    });",
+                    f'    {price_chart}.priceScale("_thShade").applyOptions({{visible:false,scaleMargins:{{top:0,bottom:0}}}});',
+                    "",
+                    "    // ── MaskedArea custom series plugin ──────────────────────",
+                    "    function _createMaskedAreaPlugin() {",
+                    "        let _d = null, _o = {};",
+                    "        return {",
+                    "            defaultOptions() { return {",
+                    f"                activeLineColor: _tBuy,",
+                    f"                activeTopColor: 'rgba(38,166,154,0.28)',",
+                    f"                activeBottomColor: 'rgba(38,166,154,0.05)',",
+                    f"                inactiveLineColor: 'rgba(150,150,150,0.55)',",
+                    f"                inactiveTopColor: 'rgba(150,150,150,0.18)',",
+                    f"                inactiveBottomColor: 'rgba(150,150,150,0.02)',",
+                    "                lineWidth: 3,",
+                    "            }; },",
+                    "            renderer() {",
+                    "                return {",
+                    "                    draw(target, priceConverter) {",
+                    "                        target.useBitmapCoordinateSpace(({context: ctx, bitmapSize, horizontalPixelRatio: hpx, verticalPixelRatio: vpx}) => {",
+                    "                            if (!_d || !_d.bars.length) return;",
+                    "                            const o = _o;",
+                    "                            const pts = [];",
+                    "                            for (const bar of _d.bars) {",
+                    "                                const od = bar.originalData;",
+                    "                                if (od.value == null) continue;",
+                    "                                const y = priceConverter(od.value);",
+                    "                                if (y == null) continue;",
+                    "                                pts.push({x: Math.round(bar.x * hpx), y: Math.round(y * vpx), a: od.active !== false});",
+                    "                            }",
+                    "                            if (!pts.length) return;",
+                    "                            const segs = []; let cur = {a: pts[0].a, p: [pts[0]]};",
+                    "                            for (let i = 1; i < pts.length; i++) {",
+                    "                                if (pts[i].a !== cur.a) { cur.p.push(pts[i]); segs.push(cur); cur = {a: pts[i].a, p: [pts[i]]}; }",
+                    "                                else { cur.p.push(pts[i]); }",
+                    "                            }",
+                    "                            segs.push(cur);",
+                    "                            const bottom = bitmapSize.height;",
+                    "                            for (const s of segs) {",
+                    "                                if (s.p.length < 2) continue;",
+                    "                                const tC = s.a ? o.activeTopColor : o.inactiveTopColor;",
+                    "                                const bC = s.a ? o.activeBottomColor : o.inactiveBottomColor;",
+                    "                                const lC = s.a ? o.activeLineColor : o.inactiveLineColor;",
+                    "                                const gr = ctx.createLinearGradient(0, 0, 0, bottom);",
+                    "                                gr.addColorStop(0, tC); gr.addColorStop(1, bC);",
+                    "                                ctx.beginPath();",
+                    "                                ctx.moveTo(s.p[0].x, s.p[0].y);",
+                    "                                for (let j = 1; j < s.p.length; j++) ctx.lineTo(s.p[j].x, s.p[j].y);",
+                    "                                ctx.lineTo(s.p[s.p.length-1].x, bottom); ctx.lineTo(s.p[0].x, bottom);",
+                    "                                ctx.closePath(); ctx.fillStyle = gr; ctx.fill();",
+                    "                                ctx.beginPath();",
+                    "                                ctx.moveTo(s.p[0].x, s.p[0].y);",
+                    "                                for (let j = 1; j < s.p.length; j++) ctx.lineTo(s.p[j].x, s.p[j].y);",
+                    "                                ctx.strokeStyle = lC; ctx.lineWidth = Math.max(1, (o.lineWidth || 2) * hpx); ctx.stroke();",
+                    "                            }",
+                    "                        });",
+                    "                    }",
+                    "                };",
+                    "            },",
+                    "            priceValueBuilder(d) { return [d.value]; },",
+                    "            isWhitespace(d) { return d.value == null; },",
+                    "            update(data, options) { _d = data; _o = options; }",
+                    "        };",
+                    "    }",
+                    "",
+                    "    const _thresholdLoLines = [];",
+                    "    const _thresholdHiLines = [];",
+                    "    const _maskedSeries = [];",
+                    f"    for (let ci = 0; ci < charts.length; ci++) {{",
+                    f"        if (ci === {pp}) continue;",
+                    f"        if (ci === {tc['equity_pane'] if tc.get('equity_pane') is not None else -1}) continue;",
+                    "        const fs = firstSeries[ci];",
+                    "        if (fs) {",
+                    "            fs.applyOptions({",
+                    '                topLineColor: "rgba(0,0,0,0)", bottomLineColor: "rgba(0,0,0,0)",',
+                    '                topFillColor1: "rgba(0,0,0,0)", topFillColor2: "rgba(0,0,0,0)",',
+                    '                bottomFillColor1: "rgba(0,0,0,0)", bottomFillColor2: "rgba(0,0,0,0)",',
+                    "                crosshairMarkerVisible: true, crosshairMarkerRadius: 5,",
+                    "                crosshairMarkerBorderWidth: 2,",
+                    "                crosshairMarkerBackgroundColor: _tBuy,",
+                    "            });",
+                    f'            const plo = fs.createPriceLine({{price:{thr0},title:"\\u03b8_lo",color:"#ef5350",lineWidth:1,lineStyle:2,axisLabelVisible:true}});',
+                    f'            const phi = fs.createPriceLine({{price:{_thr2},title:"\\u03b8_hi",color:"{tc["buy_color"]}",lineWidth:1,lineStyle:2,axisLabelVisible:true}});',
+                    "            _thresholdLoLines.push(plo);",
+                    "            _thresholdHiLines.push(phi);",
+                    "            const ms = charts[ci].addCustomSeries(_createMaskedAreaPlugin(), {",
+                    "                crosshairMarkerVisible: false,",
+                    "            });",
+                    "            _maskedSeries.push(ms);",
+                    "        }",
+                    "    }",
+                    "",
+                    "    function _buildMask(lo, hi) {",
+                    "        return _td.map(d => {",
+                    f"            const v = d.value; const active = ({_band_shade_cond});",
+                    "            return {time: d.time, value: v, active: active};",
+                    "        });",
+                    "    }",
+                    f"    const _msk0 = _buildMask({thr0}, {_thr2});",
+                    "    for (const s of _maskedSeries) s.setData(_msk0);",
+                    "",
+                    "    // Build time→active lookup for crosshair marker coloring",
+                    "    let _activeMap = {};",
+                    "    _msk0.forEach(d => { _activeMap[d.time] = d.active; });",
+                    "",
+                    "    // Collect signal-pane baseline series for marker recoloring",
+                    "    const _sigBaselines = [];",
+                    f"    for (let ci = 0; ci < charts.length; ci++) {{",
+                    f"        if (ci === {pp}) continue;",
+                    f"        if (ci === {tc['equity_pane'] if tc.get('equity_pane') is not None else -1}) continue;",
+                    "        const fs = firstSeries[ci];",
+                    "        if (fs) {",
+                    "            _sigBaselines.push(fs);",
+                    "            charts[ci].subscribeCrosshairMove(param => {",
+                    "                if (!param.time) return;",
+                    "                const isActive = _activeMap[param.time];",
+                    "                const clr = isActive ? _tBuy : 'rgba(150,150,150,0.7)';",
+                    "                fs.applyOptions({ crosshairMarkerBackgroundColor: clr });",
+                    "            });",
+                    "        }",
+                    "    }",
+                    "",
+                    "    function _buildShade(lo, hi) {",
+                    "        const d = [];",
+                    "        for (let i = 0; i < _td.length; i++) {",
+                    f"            const v = _td[i].value; const cond = {_band_shade_cond};",
+                    "            d.push({time: _td[i].time, value: cond ? 1 : 0});",
+                    "        }",
+                    "        return d;",
+                    "    }",
+                    "",
+                    "    function _mkrs(lo, hi) {",
+                    "        const m = []; let longOn = false;",
+                    "        for (let i = 0; i < _td.length; i++) {",
+                    "            const sig = _td[i].value;",
+                    f"            const goLong = {_band_pos_cond};",
+                    "            if (goLong && !longOn) {",
+                    '                m.push({time:_td[i].time,position:"belowBar",shape:"arrowUp",color:_tBuy,text:""});',
+                    "                longOn=true;",
+                    "            } else if (!goLong && longOn) {",
+                    '                m.push({time:_td[i].time,position:"aboveBar",shape:"arrowDown",color:_tSell,text:""});',
+                    "                longOn=false;",
+                    "            }",
+                    "        }",
+                    "        return m;",
+                    "    }",
+                    "",
+                ] + ([] if not tc.get("ret_data") else [
+                    "    // \u2500\u2500 Live equity + stats \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+                    f"    const _rets = {json.dumps(tc['ret_data'], separators=(',', ':'))};",
+                    f"    const _bhRets = {json.dumps(tc.get('bh_data') or [], separators=(',', ':'))};",
+                    f"    const _eqPaneIdx = {tc['equity_pane'] if tc.get('equity_pane') is not None else -1};",
+                    "    const _eqSeries  = _eqPaneIdx >= 0 ? firstSeries[_eqPaneIdx] : null;",
+                    f"    const _bhSeries  = _eqPaneIdx >= 0 ? (typeof p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 !== 'undefined' ? p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 : null) : null;",
+                    "",
+                    "    let _statsEl = null;",
+                    "    if (_eqPaneIdx >= 0) {",
+                    f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
+                    "        _statsEl = document.createElement('div');",
+                    f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
+                    f"background:{'rgba(0,0,0,0.18)' if is_dark else 'rgba(255,255,255,0.22)'};"
+                    f"backdrop-filter:blur(2px);border-radius:6px;padding:6px 10px;pointer-events:none;"
+                    f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
+                    "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
+                    "    }",
+                    "",
+                    "    function _buildEquity(lo, hi) {",
+                    "        let pos = 0, eq = 100, bh = 100;",
+                    "        const eqData = [], bhData = [];",
+                    "        let n=0,sumR=0,sumR2=0,peak=100,maxDD=0,wins=0,tradesN=0,nLong=0;",
+                    "        const hasBh = _bhRets.length === _rets.length;",
+                    "        for (let i = 0; i < _rets.length; i++) {",
+                    "            const sig = _td[i] ? _td[i].value : 0;",
+                    f"            pos = {_band_eq_expr};",
+                    "            const r = _rets[i].ret * pos;",
+                    "            eq *= (1 + r);",
+                    "            if (hasBh) bh *= (1 + _bhRets[i].ret);",
+                    "            eqData.push({time: _rets[i].time, value: eq});",
+                    "            if (hasBh) bhData.push({time: _bhRets[i].time, value: bh});",
+                    "            if (pos !== 0) { sumR += r; sumR2 += r*r; n++; if(r>0) wins++; tradesN++; }",
+                    "            if (pos === 1) nLong++;",
+                    "            if (eq > peak) peak = eq;",
+                    "            const dd = (eq - peak) / peak;",
+                    "            if (dd < maxDD) maxDD = dd;",
+                    "        }",
+                    "        const annR = n > 0 ? sumR / _rets.length * 252 : 0;",
+                    "        const annV = n > 0 ? Math.sqrt((sumR2/_rets.length - Math.pow(sumR/_rets.length,2)) * 252) : 1;",
+                    "        const sharpe = annV > 0 ? annR / annV : 0;",
+                    "        const wr = tradesN > 0 ? wins/tradesN : 0;",
+                    "        const timeMkt = n / _rets.length;",
+                    "        const s = 100 / eqData[0].value;",
+                    "        eqData.forEach(d => d.value *= s);",
+                    "        if (hasBh) { const bs = 100/bhData[0].value; bhData.forEach(d => d.value *= bs); }",
+                    "        const totalRet = eqData[eqData.length-1].value / 100 - 1;",
+                    "        const bhRet = hasBh ? bhData[bhData.length-1].value / 100 - 1 : null;",
+                    "        const nYears = _rets.length / 252;",
+                    "        const cagr = Math.pow(eqData[eqData.length-1].value/100, 1/nYears) - 1;",
+                    "        return {eqData, bhData, totalRet, bhRet, cagr, sharpe, maxDD, wr, timeMkt};",
+                    "    }",
+                    "",
+                    "    function _fmtPct(v, showSign=true) {",
+                    "        return (showSign && v>0?'+':'') + (v*100).toFixed(1)+'%';",
+                    "    }",
+                    "",
+                    "    function _updateStats(res) {",
+                    "        if (!_statsEl) return;",
+                    f"        const lbl = 'color:{'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'}';",
+                    f"        const val = 'color:{'rgba(255,255,255,0.92)' if is_dark else 'rgba(0,0,0,0.88)'};font-weight:600';",
+                    "        const rows = [",
+                    "            ['Return', _fmtPct(res.totalRet)],",
+                    "            res.bhRet !== null ? ['B&H', _fmtPct(res.bhRet)] : null,",
+                    "            ['CAGR',   _fmtPct(res.cagr)],",
+                    "            ['Sharpe', res.sharpe.toFixed(2)],",
+                    "            ['Max DD', _fmtPct(res.maxDD, false)],",
+                    "            ['Win Rate', _fmtPct(res.wr, false)],",
+                    "            ['In Mkt',  _fmtPct(res.timeMkt, false)],",
+                    "        ].filter(Boolean);",
+                    "        _statsEl.innerHTML = '<table style=\"border-collapse:collapse\">' +",
+                    "            rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('')",
+                    "            + '</table>';",
+                    "    }",
+                    "",
+                    f"    const _eq0 = _buildEquity({thr0}, {_thr2});",
+                    "    if (_eqSeries) _eqSeries.setData(_eq0.eqData);",
+                    "    if (_bhSeries && _eq0.bhData.length) _bhSeries.setData(_eq0.bhData);",
+                    "    _updateStats(_eq0);",
+                ]) + [
+                    f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}, {_thr2}));",
+                    f"    _shadeSeries.setData(_buildShade({thr0}, {_thr2}));",
+
+                    "",
+                    "    (function() {",
+                    f"        const m0 = _mkrs({thr0}, {_thr2});",
+                    '        document.getElementById("th-count").textContent = m0.filter(x=>x.shape==="arrowUp").length + " signals";',
+                    "    })();",
+                    f"    let _thLo = {thr0}, _thHi = {_thr2};",
+                    "    const _loSlider = document.getElementById('th-lo-slider');",
+                    "    const _hiSlider = document.getElementById('th-hi-slider');",
+                    "",
+                    "    function _th_update(lo, hi) {",
+                    '        document.getElementById("th-lo-label").textContent = "\\u03b8_lo\\u00a0" + lo.toFixed(_tDec);',
+                    '        document.getElementById("th-hi-label").textContent = "\\u03b8_hi\\u00a0" + hi.toFixed(_tDec);',
+                    "        const m = _mkrs(lo, hi);",
+                    "        _thP.setMarkers(m);",
+                    "        _shadeSeries.setData(_buildShade(lo, hi));",
+                    "        const _msk = _buildMask(lo, hi);",
+                    "        for (const s of _maskedSeries) s.setData(_msk);",
+                    "        _activeMap = {}; _msk.forEach(d => { _activeMap[d.time] = d.active; });",
+                    "        for (const pl of _thresholdLoLines) pl.applyOptions({price: lo});",
+                    "        for (const pl of _thresholdHiLines) pl.applyOptions({price: hi});",
+                    '        document.getElementById("th-count").textContent = m.filter(x=>x.shape==="arrowUp").length + " signals";',
+                ] + ([] if not tc.get("ret_data") else [
+                    "        if (_rets && _rets.length) {",
+                    "            const eq = _buildEquity(lo, hi);",
+                    "            if (_eqSeries) _eqSeries.setData(eq.eqData);",
+                    "            if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData);",
+                    "            _updateStats(eq);",
+                    "        }",
+                ]) + [
+                    "    }",
+                    "",
+                    "    _loSlider.addEventListener('input', function() {",
+                    "        _thLo = parseFloat(this.value);",
+                    "        if (_thLo > _thHi) { _thHi = _thLo; _hiSlider.value = _thHi; }",
+                    "        _th_update(_thLo, _thHi);",
+                    "    });",
+                    "    _hiSlider.addEventListener('input', function() {",
+                    "        _thHi = parseFloat(this.value);",
+                    "        if (_thHi < _thLo) { _thLo = _thHi; _loSlider.value = _thLo; }",
+                    "        _th_update(_thLo, _thHi);",
+                    "    });",
+                ])
 
         # Crosshair + time scale sync JS
         sync_js = """
