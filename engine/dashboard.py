@@ -17,9 +17,10 @@ Pattern (matches TKAN / Cogilator multi-panel layouts):
     dash.show()
 """
 
+import html as _html
 import json
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -57,6 +58,7 @@ class Dashboard:
                 pane._theme_name = self._theme_name
                 pane._theme = self._theme
         self._threshold_config = None
+        self._bg_image_config: Optional[Dict] = None
 
     @property
     def theme(self) -> str:
@@ -218,6 +220,42 @@ class Dashboard:
         }
         return self
 
+    def background_image(
+        self,
+        url: str,
+        blur: int = 0,
+        tint: str = "rgba(6,6,20,0.40)",
+        glass_blur: int = 16,
+        glass_tint: str = "rgba(10,10,26,0.55)",
+    ) -> "Dashboard":
+        """Set a custom background image with a frosted-glass panel over it.
+
+        The chart canvas becomes transparent; the image is rendered as the
+        body background and the charts float as frosted-glass cards on top.
+
+        Parameters
+        ----------
+        url : str
+            Image URL (``https://...``) or a base64 data URI
+            (``data:image/jpeg;base64,...``).
+        blur : int
+            Blur applied directly to the background image layer (px). Default 0.
+        tint : str
+            Colour overlay between the image and the glass panel.
+        glass_blur : int
+            ``backdrop-filter: blur(Xpx)`` strength on the glass panel (default 16).
+        glass_tint : str
+            Semi-transparent background colour of the glass panel.
+        """
+        self._bg_image_config = {
+            "url": url,
+            "blur": blur,
+            "tint": tint,
+            "glass_blur": glass_blur,
+            "glass_tint": glass_tint,
+        }
+        return self
+
     @property
     def total_height(self) -> int:
         title_h = sum(24 for i in range(len(self._panes)) if self._get_title(i))
@@ -277,15 +315,47 @@ class Dashboard:
                     f'text-transform:uppercase">{title}</div>'
                 )
 
+            # Build stats legend overlay if set on the pane
+            _stats_html = ""
+            if getattr(pane, "_stats_legend", None):
+                _sl = pane._stats_legend
+                _pos = _sl.get("position", "top-left")
+                _v, _h = ("top:8px" if "top" in _pos else "bottom:8px"), ("left:8px" if "left" in _pos else "right:8px")
+                _rows = "".join(
+                    f'<tr><td style="color:rgba(255,255,255,0.55);padding-right:10px;white-space:nowrap">'
+                    f'{_html.escape(str(k))}</td>'
+                    f'<td style="color:rgba(255,255,255,0.92);font-weight:600;text-align:right">'
+                    f'{_html.escape(str(v))}</td></tr>'
+                    for k, v in _sl["metrics"].items()
+                )
+                _stats_html = (
+                    f'<div onclick="var t=this.querySelector(\'table\');'
+                    f't.style.display=t.style.display===\'none\'?\'table\':\'none\';'
+                    f'this.querySelector(\'span\').textContent=t.style.display===\'none\'?\'▸ STATS\':\'▾ STATS\'" '
+                    f'style="position:absolute;{_v};{_h};z-index:6;'
+                    f'background:rgba(10,10,26,0.62);'
+                    f'backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);'
+                    f'border:1px solid rgba(255,255,255,0.10);'
+                    f'border-radius:10px;padding:6px 12px;pointer-events:auto;cursor:pointer;user-select:none;">' 
+                    f'<div style="color:rgba(255,255,255,0.4);font:9px/1.8 \'SF Mono\',monospace;'
+                    f'text-align:right;letter-spacing:0.5px"><span>▾ STATS</span></div>'
+                    f'<table style="border-collapse:collapse;font:11px/1.6 \'SF Mono\',monospace">'
+                    f'{_rows}</table></div>'
+                )
             pane_divs.append(
-                f'<div id="{div_id}" style="width:100%;height:{pane._height}px;'
-                f'margin-bottom:{self._gap}px"></div>'
+                f'<div id="{div_id}" style="position:relative;width:100%;height:{pane._height}px;'
+                f'margin-bottom:{self._gap}px">{_stats_html}</div>'
             )
 
             # Build chart options — hide time axis labels on non-bottom panes
             chart_opts = pane._build_chart_options()
             # Dashboard panes use fixed container divs, not autoSize
             chart_opts.pop("autoSize", None)
+            # If dashboard has a bg image, make all pane canvases transparent
+            if self._bg_image_config:
+                lo = chart_opts.get("layout", {})
+                lo["background"] = {"type": "solid", "color": "rgba(0,0,0,0)"}
+                chart_opts["layout"] = lo
             if not is_last:
                 ts = chart_opts.get("timeScale", {})
                 ts["visible"] = False
@@ -591,8 +661,9 @@ class Dashboard:
                 f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
                 "        _statsEl = document.createElement('div');",
                 f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
-                f"background:{'rgba(0,0,0,0.18)' if is_dark else 'rgba(255,255,255,0.22)'};"
-                f"backdrop-filter:blur(2px);border-radius:6px;padding:6px 10px;pointer-events:none;"
+                f"background:{'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'};"
+                f"backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);"
+                f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:8px 12px;pointer-events:none;"
                 f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
                 "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
                 "    }",
@@ -903,8 +974,9 @@ class Dashboard:
                     f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
                     "        _statsEl = document.createElement('div');",
                     f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
-                    f"background:{'rgba(0,0,0,0.18)' if is_dark else 'rgba(255,255,255,0.22)'};"
-                    f"backdrop-filter:blur(2px);border-radius:6px;padding:6px 10px;pointer-events:none;"
+                    f"background:{'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'};"
+                    f"backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);"
+                    f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:8px 12px;pointer-events:none;"
                     f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
                     "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
                     "    }",
@@ -1077,6 +1149,32 @@ class Dashboard:
         # SVG marble texture (rendered behind charts)
         bg_svg = self._theme.get("background_svg", "")
 
+        # ── Background image glass overlay ───────────────────────────────
+        _bgi = self._bg_image_config
+        if _bgi:
+            # Put image on body so backdrop-filter on #glass can blur it
+            _url_safe = _bgi["url"].replace('"', "%22")
+            bg_css = f'background:url("{_url_safe}") center/cover no-repeat;'
+            _blur_div = (
+                f'<div style="position:absolute;inset:0;z-index:0;'
+                f'backdrop-filter:blur({_bgi["blur"]}px);'
+                f'-webkit-backdrop-filter:blur({_bgi["blur"]}px);"></div>'
+                if _bgi["blur"] > 0 else ""
+            )
+            _glass_open = (
+                f'{_blur_div}'
+                f'<div id="bg-tint" style="position:absolute;inset:0;z-index:1;'
+                f'background:{_bgi["tint"]}"></div>'
+                f'<div id="glass" style="position:absolute;inset:0;z-index:2;'
+                f'backdrop-filter:blur({_bgi["glass_blur"]}px) saturate(180%);'
+                f'-webkit-backdrop-filter:blur({_bgi["glass_blur"]}px) saturate(180%);'
+                f'background:{_bgi["glass_tint"]};border-radius:12px;overflow:hidden;">'
+            )
+            _glass_close = "</div>"
+        else:
+            _glass_open = ""
+            _glass_close = ""
+
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -1088,9 +1186,8 @@ body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative;border-radius:
 #signum-logo{{position:absolute;right:12px;bottom:6px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
-{bg_svg}
-{divs_html}
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
+{bg_svg}{_glass_open}{divs_html}
+{_glass_close}{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
     const charts = [];
     const firstSeries = [];

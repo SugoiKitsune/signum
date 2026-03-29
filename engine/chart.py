@@ -13,35 +13,12 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 
 from .themes import THEMES
+from .logos import LOGO_APEX as _LOGO_B64  # swap to LOGO_DIAMOND to restore the classic logo
 
 # ── Local JS bundle ───────────────────────────────────────────────────────
 _VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
 _LC_JS_PATH = _VENDOR_DIR / "signum-charts.js"
 _LC_JS_CACHE: Optional[str] = None
-
-# ── Signum logo (64x64 SVG, base64) ──────────────────────────────────────
-_LOGO_B64 = (
-    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2"
-    "NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4NCiAgPCEtLSBTaWdudW0gdjI6IEVuaGFu"
-    "Y2VkIHNpZ25hbCBwdWxzZSB0aHJvdWdoIGRpYW1vbmQgd2l0aCBpbm5lciBnZW9tZXRyeSAt"
-    "LT4NCiAgPCEtLSBPdXRlciBkaWFtb25kIGZyYW1lIC0tPg0KICA8cG9seWdvbiBwb2ludHM9"
-    "IjMyLDIgNjIsMzIgMzIsNjIgMiwzMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ry"
-    "b2tlLXdpZHRoPSIyIi8+DQogIDwhLS0gQ29ybmVyIHRpY2sgbWFya3Mgb24gb3V0ZXIgZGlh"
-    "bW9uZCAtLT4NCiAgPGxpbmUgeDE9IjMyIiB5MT0iMiIgeDI9IjMyIiB5Mj0iOCIgc3Ryb2tl"
-    "PSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiLz4NCiAgPGxpbmUgeDE9IjYyIiB5MT0iMzIi"
-    "IHgyPSI1NiIgeTI9IjMyIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuNSIvPg0K"
-    "ICA8bGluZSB4MT0iMzIiIHkxPSI2MiIgeDI9IjMyIiB5Mj0iNTYiIHN0cm9rZT0id2hpdGUi"
-    "IHN0cm9rZS13aWR0aD0iMS41Ii8+DQogIDxsaW5lIHgxPSIyIiB5MT0iMzIiIHgyPSI4IiB5"
-    "Mj0iMzIiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41Ii8+DQogIDwhLS0gU2ln"
-    "bmFsIHB1bHNlIHdhdmUgKG1vcmUgY29tcGxleCB3YXZlZm9ybSkgLS0+DQogIDxwb2x5bGlu"
-    "ZSBwb2ludHM9IjYsMzIgMTYsMzIgMTksMzIgMjIsMjIgMjUsNDAgMjgsMTYgMzIsNDggMzUs"
-    "MjAgMzgsMzggNDEsMjggNDQsMzIgNDgsMzIgNTgsMzIiDQogICAgICAgICAgICBmaWxsPSJu"
-    "b25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMiIgc3Ryb2tlLWxpbmVqb2lu"
-    "PSJyb3VuZCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+DQogIDwhLS0gU21hbGwgZmxhbmtp"
-    "bmcgZG90cyAtLT4NCiAgPGNpcmNsZSBjeD0iMTAiIGN5PSIzMiIgcj0iMS4yIiBmaWxsPSJ3"
-    "aGl0ZSIvPg0KICA8Y2lyY2xlIGN4PSI1NCIgY3k9IjMyIiByPSIxLjIiIGZpbGw9IndoaXRl"
-    "Ii8+DQo8L3N2Zz4NCg=="
-)
 
 
 def _get_lc_js() -> str:
@@ -87,6 +64,7 @@ class Chart:
         self._line_color_idx = 0
         self._threshold_config: Optional[Dict[str, Any]] = None
         self._stats_legend: Optional[Dict[str, Any]] = None
+        self._bg_image_config: Optional[Dict] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -102,7 +80,9 @@ class Chart:
             "or set a DatetimeIndex."
         )
 
-    def _prepare_time(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _prepare_time(self, df) -> pd.DataFrame:
+        if isinstance(df, pd.Series):
+            df = df.to_frame(df.name or "value")
         time_col = self._detect_time_col(df)
         df = df.copy()
         if time_col == "__index__":
@@ -526,6 +506,42 @@ class Chart:
         }
         return self
 
+    def background_image(
+        self,
+        url: str,
+        blur: int = 0,
+        tint: str = "rgba(6,6,20,0.40)",
+        glass_blur: int = 16,
+        glass_tint: str = "rgba(10,10,26,0.55)",
+    ) -> "Chart":
+        """Set a custom background image with a frosted-glass panel over it.
+
+        The chart canvas becomes transparent; the image is rendered as the
+        body background and the chart floats as a frosted-glass card on top.
+
+        Parameters
+        ----------
+        url : str
+            Image URL (``https://...``) or a base64 data URI
+            (``data:image/jpeg;base64,...``).
+        blur : int
+            Blur applied directly to the background image layer (px). Default 0.
+        tint : str
+            Colour overlay between the image and the glass panel.
+        glass_blur : int
+            ``backdrop-filter: blur(Xpx)`` strength on the glass panel (default 16).
+        glass_tint : str
+            Semi-transparent background colour of the glass panel.
+        """
+        self._bg_image_config = {
+            "url": url,
+            "blur": blur,
+            "tint": tint,
+            "glass_blur": glass_blur,
+            "glass_tint": glass_tint,
+        }
+        return self
+
     # ── Build HTML ────────────────────────────────────────────────────────
 
     def _build_chart_options(self) -> dict:
@@ -540,9 +556,9 @@ class Chart:
         layout = opts.get("layout", {})
         layout["attributionLogo"] = False
 
-        # If theme has CSS texture background, make canvas transparent
-        if self._theme.get("background_css"):
-            layout["background"] = {"type": "solid", "color": "transparent"}
+        # If theme has CSS texture background or bg image, make canvas transparent
+        if self._theme.get("background_css") or self._bg_image_config:
+            layout["background"] = {"type": "solid", "color": "rgba(0,0,0,0)"}
 
         opts["layout"] = layout
 
@@ -722,7 +738,7 @@ class Chart:
             sl = self._stats_legend
             pos = sl["position"]
             is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
-            box_bg = "rgba(0,0,0,0.52)" if is_dark_bg else "rgba(255,255,255,0.72)"
+            box_bg = "rgba(10,10,26,0.62)" if is_dark_bg else "rgba(255,255,255,0.68)"
             lbl_c  = "rgba(255,255,255,0.55)" if is_dark_bg else "rgba(0,0,0,0.45)"
             val_c  = "rgba(255,255,255,0.92)" if is_dark_bg else "rgba(0,0,0,0.88)"
             corner_css = {
@@ -742,12 +758,41 @@ class Chart:
             )
             stats_html = (
                 f'<div style="position:absolute;{corner_css};z-index:6;'
-                f'background:{box_bg};backdrop-filter:blur(4px);'
-                f'border-radius:6px;padding:6px 10px;pointer-events:none;">'
+                f'background:{box_bg};'
+                f'backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);'
+                f'border:1px solid rgba(255,255,255,0.10);'
+                f'border-radius:10px;padding:8px 12px;pointer-events:none;">' 
                 f'<table style="border-collapse:collapse;'
                 f'font:11px/1.6 \'SF Mono\',\'Consolas\',monospace">'
                 f'{rows}</table></div>'
             )
+
+        # ── Background image glass overlay ────────────────────────────────
+        _bgi = self._bg_image_config
+        if _bgi:
+            # Put image on body so backdrop-filter on #glass can blur it
+            _url_safe = _bgi["url"].replace('"', "%22")
+            bg_css = f'background:url("{_url_safe}") center/cover no-repeat;'
+            # Optional image-level blur via a transparent backdrop-filter helper div
+            _blur_div = (
+                f'<div style="position:absolute;inset:0;z-index:0;'
+                f'backdrop-filter:blur({_bgi["blur"]}px);'
+                f'-webkit-backdrop-filter:blur({_bgi["blur"]}px);"></div>'
+                if _bgi["blur"] > 0 else ""
+            )
+            _glass_open = (
+                f'{_blur_div}'
+                f'<div id="bg-tint" style="position:absolute;inset:0;z-index:1;'
+                f'background:{_bgi["tint"]}"></div>'
+                f'<div id="glass" style="position:absolute;inset:0;z-index:2;'
+                f'backdrop-filter:blur({_bgi["glass_blur"]}px) saturate(180%);'
+                f'-webkit-backdrop-filter:blur({_bgi["glass_blur"]}px) saturate(180%);'
+                f'background:{_bgi["glass_tint"]};border-radius:12px;overflow:hidden;">'
+            )
+            _glass_close = "</div>"
+        else:
+            _glass_open = ""
+            _glass_close = ""
 
         return f"""<!DOCTYPE html>
 <html><head>
@@ -762,12 +807,11 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 #signum-logo{{position:absolute;right:12px;bottom:4px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
-{bg_svg}
-<div id="fc"></div>
+{bg_svg}{_glass_open}<div id="fc"></div>
 {stats_html}
 <div id="err"></div>
 {slider_html}
-{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
+{_glass_close}{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
 try {{
     const chart = LightweightCharts.createChart(document.getElementById('fc'), {chart_opts});
