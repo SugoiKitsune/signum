@@ -509,7 +509,7 @@ class Chart:
 
     def smoothing_control(
         self,
-        raw_series: pd.Series,
+        raw_series: Optional[pd.Series] = None,
         series_index: int = -1,
         mode: str = "rolling",
         window_init: int = 20,
@@ -518,23 +518,68 @@ class Chart:
         window_step: int = 1,
         label: Optional[str] = None,
         color: Optional[str] = None,
+        variants: Optional[dict] = None,
+        variants_init: Optional[Any] = None,
     ) -> "Chart":
-        """Add an interactive window slider that recomputes a smoothed line live.
+        """Add an interactive slider that updates a chart series with a smoothed line.
 
-        Drag the slider → JS recomputes rolling mean (or EMA) over *raw_series*
-        and updates the target chart series in real-time. No Python callback needed.
+        Two modes:
+
+        **Built-in (SMA / EMA)** — pass ``raw_series`` and ``mode``:
+            Slider recomputes rolling mean or EMA in pure JS, no Python needed.
+
+        **Custom smoother** — pass ``variants`` dict:
+            Pre-compute your own smoothed series in Python (Kalman, HP filter,
+            LOWESS, anything) as ``{param_value: pd.Series}``.
+            The slider swaps between the pre-computed arrays in JS — no callbacks.
 
         Parameters
         ----------
-        raw_series : pd.Series with DatetimeIndex — the un-smoothed source values.
-        series_index : Which series in the chart to update. ``-1`` means the last
-            series added (the smoothed line you just appended with .line()).
-        mode : ``"rolling"`` (simple rolling mean) or ``"ema"`` (exponential).
-        window_init : Starting window / half-life in days.
-        window_min, window_max, window_step : Slider range and step.
-        label : Slider label prefix (default: ``"win"`` for rolling, ``"hl"`` for ema).
-        color : Accent colour for the slider thumb.  Defaults to the series colour.
+        raw_series : pd.Series with DatetimeIndex — source for built-in SMA/EMA.
+        series_index : Which series to update. ``-1`` = last series added.
+        mode : ``"rolling"`` (SMA) or ``"ema"`` (exponential). Ignored if *variants* given.
+        window_init : Starting window. Ignored if *variants* given.
+        window_min, window_max, window_step : Slider range. Ignored if *variants* given.
+        label : Slider label prefix.
+        color : Accent colour for the slider thumb.
+        variants : Dict ``{param_value: pd.Series}`` — pre-computed smoothed series.
+            Keys are shown in the slider label; order is preserved.
+        variants_init : Which key to start on (default: middle of the dict).
         """
+        acc = color or "#a0c4ff"
+
+        if variants is not None:
+            # ── Custom smoother path — pre-computed arrays, JS just swaps ──
+            keys = list(variants.keys())
+            arrays = []
+            for _s in variants.values():
+                _s = _s.dropna()
+                if hasattr(_s.index, "strftime"):
+                    _times = _s.index.strftime("%Y-%m-%d").tolist()
+                else:
+                    _times = [str(t) for t in _s.index]
+                arrays.append([{"time": t, "value": float(v)} for t, v in zip(_times, _s.values)])
+            if variants_init is None:
+                init_idx = len(keys) // 2
+            elif variants_init in keys:
+                init_idx = keys.index(variants_init)
+            else:
+                init_idx = 0
+            lbl = label or "param"
+            self._smoothing_configs.append({
+                "mode":          "variants",
+                "variants_data": arrays,
+                "variants_keys": [str(k) for k in keys],
+                "variants_init": init_idx,
+                "series_index":  series_index,
+                "label":         lbl,
+                "color":         acc,
+            })
+            return self
+
+        # ── Built-in SMA / EMA path ──────────────────────────────────────
+        if raw_series is None:
+            raise ValueError("smoothing_control: provide either raw_series or variants=")
         s = raw_series.dropna()
         if hasattr(s.index, "strftime"):
             times = s.index.strftime("%Y-%m-%d").tolist()
@@ -542,17 +587,16 @@ class Chart:
             times = [str(t) for t in s.index]
         raw_data = [{"time": t, "value": float(v)} for t, v in zip(times, s.values)]
         lbl = label or ("hl" if mode == "ema" else "win")
-        acc = color or "#a0c4ff"
         self._smoothing_configs.append({
-            "raw_data":    raw_data,
+            "raw_data":     raw_data,
             "series_index": series_index,
-            "mode":        mode,
-            "window_init": window_init,
-            "window_min":  window_min,
-            "window_max":  window_max,
-            "window_step": window_step,
-            "label":       lbl,
-            "color":       acc,
+            "mode":         mode,
+            "window_init":  window_init,
+            "window_min":   window_min,
+            "window_max":   window_max,
+            "window_step":  window_step,
+            "label":        lbl,
+            "color":        acc,
         })
         return self
 
@@ -854,60 +898,95 @@ class Chart:
             smoothing_extra_height += 36
             sid = f"sm-slider-{sc_idx}"
             lid = f"sm-label-{sc_idx}"
-            raw_id = f"_smRaw{sc_idx}"
             n_series = len(self._series)
             target_idx = sc["series_index"] if sc["series_index"] >= 0 else n_series + sc["series_index"]
             svar_sm = f"s{target_idx}"
-            smoothing_html += (
-                f'<div style="display:flex;align-items:center;justify-content:center;'
-                f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
-                f'<span id="{lid}" style="color:{_lbl_c};'
-                f"font:11px/1 'SF Mono','Consolas',monospace;min-width:80px\">"
-                f'{sc["label"]} {sc["window_init"]}</span>'
-                f'<input id="{sid}" type="range" '
-                f'min="{sc["window_min"]}" max="{sc["window_max"]}" step="{sc["window_step"]}" '
-                f'value="{sc["window_init"]}" '
-                f'style="width:220px;cursor:pointer;accent-color:{sc["color"]}">'
-                f'</div>\n'
-            )
-            raw_json = self._json(sc["raw_data"])
             mode = sc["mode"]
             lbl  = sc["label"]
-            if mode == "ema":
-                compute_fn = (
-                    "function _smCompute(rd, win) {\n"
-                    "    const k = 2 / (win + 1); let ema = null; const out = [];\n"
-                    "    for (const d of rd) {\n"
-                    "        ema = ema === null ? d.value : d.value * k + ema * (1 - k);\n"
-                    "        out.push({time: d.time, value: ema});\n"
-                    "    }\n"
-                    "    return out;\n"
-                    "}"
+
+            if mode == "variants":
+                # ── variants: discrete switcher, JS swaps pre-computed arrays ──
+                n_var    = len(sc["variants_keys"])
+                init_idx = sc["variants_init"]
+                init_key = sc["variants_keys"][init_idx]
+                smoothing_html += (
+                    f'<div style="display:flex;align-items:center;justify-content:center;'
+                    f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
+                    f'<span id="{lid}" style="color:{_lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:80px\">"
+                    f'{lbl} {init_key}</span>'
+                    f'<input id="{sid}" type="range" '
+                    f'min="0" max="{n_var - 1}" step="1" '
+                    f'value="{init_idx}" '
+                    f'style="width:220px;cursor:pointer;accent-color:{sc["color"]}">'
+                    f'</div>\n'
                 )
+                var_data_id = f"_smVarData{sc_idx}"
+                var_keys_id = f"_smVarKeys{sc_idx}"
+                smoothing_js += "\n".join([
+                    f"    // \u2500\u2500 Smoothing slider #{sc_idx} (variants) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+                    f"    const {var_data_id} = {self._json(sc['variants_data'])};",
+                    f"    const {var_keys_id} = {self._json(sc['variants_keys'])};",
+                    f"    {svar_sm}.setData({var_data_id}[{init_idx}]);",
+                    f"    document.getElementById('{sid}').addEventListener('input', function() {{",
+                    f"        const idx = parseInt(this.value);",
+                    f"        document.getElementById('{lid}').textContent = '{lbl} ' + {var_keys_id}[idx];",
+                    f"        {svar_sm}.setData({var_data_id}[idx]);",
+                    f"    }});",
+                    "",
+                ])
+
             else:
-                compute_fn = (
-                    "function _smCompute(rd, win) {\n"
-                    "    const out = []; let sum = 0, buf = [];\n"
-                    "    for (const d of rd) {\n"
-                    "        buf.push(d.value); sum += d.value;\n"
-                    "        if (buf.length > win) { sum -= buf.shift(); }\n"
-                    "        out.push({time: d.time, value: sum / buf.length});\n"
-                    "    }\n"
-                    "    return out;\n"
-                    "}"
+                # ── built-in SMA / EMA: compute fn runs in JS ──────────────────
+                raw_id   = f"_smRaw{sc_idx}"
+                raw_json = self._json(sc["raw_data"])
+                smoothing_html += (
+                    f'<div style="display:flex;align-items:center;justify-content:center;'
+                    f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
+                    f'<span id="{lid}" style="color:{_lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:80px\">"
+                    f'{lbl} {sc["window_init"]}</span>'
+                    f'<input id="{sid}" type="range" '
+                    f'min="{sc["window_min"]}" max="{sc["window_max"]}" step="{sc["window_step"]}" '
+                    f'value="{sc["window_init"]}" '
+                    f'style="width:220px;cursor:pointer;accent-color:{sc["color"]}">'
+                    f'</div>\n'
                 )
-            smoothing_js += "\n".join([
-                f"    // \u2500\u2500 Smoothing slider #{sc_idx} ({mode}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-                f"    const {raw_id} = {raw_json};",
-                f"    {compute_fn}",
-                f"    {svar_sm}.setData(_smCompute({raw_id}, {sc['window_init']}));",
-                f"    document.getElementById('{sid}').addEventListener('input', function() {{",
-                f"        const win = parseInt(this.value);",
-                f"        document.getElementById('{lid}').textContent = '{lbl} ' + win;",
-                f"        {svar_sm}.setData(_smCompute({raw_id}, win));",
-                f"    }});",
-                "",
-            ])
+                if mode == "ema":
+                    compute_fn = (
+                        "function _smCompute(rd, win) {\n"
+                        "    const k = 2 / (win + 1); let ema = null; const out = [];\n"
+                        "    for (const d of rd) {\n"
+                        "        ema = ema === null ? d.value : d.value * k + ema * (1 - k);\n"
+                        "        out.push({time: d.time, value: ema});\n"
+                        "    }\n"
+                        "    return out;\n"
+                        "}"
+                    )
+                else:
+                    compute_fn = (
+                        "function _smCompute(rd, win) {\n"
+                        "    const out = []; let sum = 0, buf = [];\n"
+                        "    for (const d of rd) {\n"
+                        "        buf.push(d.value); sum += d.value;\n"
+                        "        if (buf.length > win) { sum -= buf.shift(); }\n"
+                        "        out.push({time: d.time, value: sum / buf.length});\n"
+                        "    }\n"
+                        "    return out;\n"
+                        "}"
+                    )
+                smoothing_js += "\n".join([
+                    f"    // \u2500\u2500 Smoothing slider #{sc_idx} ({mode}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+                    f"    const {raw_id} = {raw_json};",
+                    f"    {compute_fn}",
+                    f"    {svar_sm}.setData(_smCompute({raw_id}, {sc['window_init']}));",
+                    f"    document.getElementById('{sid}').addEventListener('input', function() {{",
+                    f"        const win = parseInt(this.value);",
+                    f"        document.getElementById('{lid}').textContent = '{lbl} ' + win;",
+                    f"        {svar_sm}.setData(_smCompute({raw_id}, win));",
+                    f"    }});",
+                    "",
+                ])
 
         total_extra = slider_extra_height + smoothing_extra_height
         self._slider_extra_height = total_extra
