@@ -63,6 +63,7 @@ class Chart:
         self._markers: Dict[int, List[Dict[str, Any]]] = {}
         self._line_color_idx = 0
         self._threshold_config: Optional[Dict[str, Any]] = None
+        self._smoothing_configs: List[Dict[str, Any]] = []
         self._stats_legend: Optional[Dict[str, Any]] = None
         self._bg_image_config: Optional[Dict] = None
 
@@ -506,6 +507,55 @@ class Chart:
         }
         return self
 
+    def smoothing_control(
+        self,
+        raw_series: pd.Series,
+        series_index: int = -1,
+        mode: str = "rolling",
+        window_init: int = 20,
+        window_min: int = 2,
+        window_max: int = 252,
+        window_step: int = 1,
+        label: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> "Chart":
+        """Add an interactive window slider that recomputes a smoothed line live.
+
+        Drag the slider → JS recomputes rolling mean (or EMA) over *raw_series*
+        and updates the target chart series in real-time. No Python callback needed.
+
+        Parameters
+        ----------
+        raw_series : pd.Series with DatetimeIndex — the un-smoothed source values.
+        series_index : Which series in the chart to update. ``-1`` means the last
+            series added (the smoothed line you just appended with .line()).
+        mode : ``"rolling"`` (simple rolling mean) or ``"ema"`` (exponential).
+        window_init : Starting window / half-life in days.
+        window_min, window_max, window_step : Slider range and step.
+        label : Slider label prefix (default: ``"win"`` for rolling, ``"hl"`` for ema).
+        color : Accent colour for the slider thumb.  Defaults to the series colour.
+        """
+        s = raw_series.dropna()
+        if hasattr(s.index, "strftime"):
+            times = s.index.strftime("%Y-%m-%d").tolist()
+        else:
+            times = [str(t) for t in s.index]
+        raw_data = [{"time": t, "value": float(v)} for t, v in zip(times, s.values)]
+        lbl = label or ("hl" if mode == "ema" else "win")
+        acc = color or "#a0c4ff"
+        self._smoothing_configs.append({
+            "raw_data":    raw_data,
+            "series_index": series_index,
+            "mode":        mode,
+            "window_init": window_init,
+            "window_min":  window_min,
+            "window_max":  window_max,
+            "window_step": window_step,
+            "label":       lbl,
+            "color":       acc,
+        })
+        return self
+
     def background_image(
         self,
         url: str,
@@ -794,6 +844,74 @@ class Chart:
             _glass_open = ""
             _glass_close = ""
 
+        # ── Smoothing control sliders ──────────────────────────────────────
+        smoothing_html = ""
+        smoothing_js   = ""
+        smoothing_extra_height = 0
+        is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+        _lbl_c = "rgba(255,255,255,0.88)" if is_dark_bg else "rgba(0,0,0,0.78)"
+        for sc_idx, sc in enumerate(self._smoothing_configs):
+            smoothing_extra_height += 36
+            sid = f"sm-slider-{sc_idx}"
+            lid = f"sm-label-{sc_idx}"
+            raw_id = f"_smRaw{sc_idx}"
+            n_series = len(self._series)
+            target_idx = sc["series_index"] if sc["series_index"] >= 0 else n_series + sc["series_index"]
+            svar_sm = f"s{target_idx}"
+            smoothing_html += (
+                f'<div style="display:flex;align-items:center;justify-content:center;'
+                f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
+                f'<span id="{lid}" style="color:{_lbl_c};'
+                f"font:11px/1 'SF Mono','Consolas',monospace;min-width:80px\">"
+                f'{sc["label"]} {sc["window_init"]}</span>'
+                f'<input id="{sid}" type="range" '
+                f'min="{sc["window_min"]}" max="{sc["window_max"]}" step="{sc["window_step"]}" '
+                f'value="{sc["window_init"]}" '
+                f'style="width:220px;cursor:pointer;accent-color:{sc["color"]}">'
+                f'</div>\n'
+            )
+            raw_json = self._json(sc["raw_data"])
+            mode = sc["mode"]
+            lbl  = sc["label"]
+            if mode == "ema":
+                compute_fn = (
+                    "function _smCompute(rd, win) {\n"
+                    "    const k = 2 / (win + 1); let ema = null; const out = [];\n"
+                    "    for (const d of rd) {\n"
+                    "        ema = ema === null ? d.value : d.value * k + ema * (1 - k);\n"
+                    "        out.push({time: d.time, value: ema});\n"
+                    "    }\n"
+                    "    return out;\n"
+                    "}"
+                )
+            else:
+                compute_fn = (
+                    "function _smCompute(rd, win) {\n"
+                    "    const out = []; let sum = 0, buf = [];\n"
+                    "    for (const d of rd) {\n"
+                    "        buf.push(d.value); sum += d.value;\n"
+                    "        if (buf.length > win) { sum -= buf.shift(); }\n"
+                    "        out.push({time: d.time, value: sum / buf.length});\n"
+                    "    }\n"
+                    "    return out;\n"
+                    "}"
+                )
+            smoothing_js += "\n".join([
+                f"    // \u2500\u2500 Smoothing slider #{sc_idx} ({mode}) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+                f"    const {raw_id} = {raw_json};",
+                f"    {compute_fn}",
+                f"    {svar_sm}.setData(_smCompute({raw_id}, {sc['window_init']}));",
+                f"    document.getElementById('{sid}').addEventListener('input', function() {{",
+                f"        const win = parseInt(this.value);",
+                f"        document.getElementById('{lid}').textContent = '{lbl} ' + win;",
+                f"        {svar_sm}.setData(_smCompute({raw_id}, win));",
+                f"    }});",
+                "",
+            ])
+
+        total_extra = slider_extra_height + smoothing_extra_height
+        self._slider_extra_height = total_extra
+
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -801,7 +919,7 @@ class Chart:
 <script>{lc_js}</script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self._height + 28 + slider_extra_height}px}}
+body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self._height + 28 + total_extra}px}}
 #fc{{width:{width_css};height:{self._height}px;position:relative;z-index:1}}
 #err{{position:absolute;top:0;left:0;color:red;font-size:11px;z-index:9999;padding:4px;background:rgba(0,0,0,0.9);display:none}}
 #signum-logo{{position:absolute;right:12px;bottom:4px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
@@ -811,6 +929,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 {stats_html}
 <div id="err"></div>
 {slider_html}
+{smoothing_html}
 {_glass_close}{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
 try {{
@@ -818,6 +937,7 @@ try {{
     {series_js}
     chart.timeScale().fitContent();
     {slider_js}
+    {smoothing_js}
     window.addEventListener('resize', () => chart.timeScale().fitContent());
 }} catch(e) {{
     var el = document.getElementById('err');

@@ -17,4 +17,4 @@ from .engine.dashboard import Dashboard
 from .engine.statchart import StatChart
 
 __all__ = ["Chart", "Dashboard", "StatChart"]
-__version__ = "0.3.2"
+__version__ = "0.35.0"
