@@ -260,6 +260,12 @@ class Dashboard:
     def total_height(self) -> int:
         title_h = sum(24 for i in range(len(self._panes)) if self._get_title(i))
         slider_h = 36 if self._threshold_config else 0
+        # Count deduplicated smoothing sliders (one row per unique label)
+        _sm_labels = set()
+        for pane in self._panes:
+            for sc in getattr(pane, "_smoothing_configs", []):
+                _sm_labels.add(sc.get("label", ""))
+        slider_h += len(_sm_labels) * 36
         return sum(p._height for p in self._panes) + self._gap * max(0, len(self._panes) - 1) + title_h + slider_h
 
     def _get_title(self, idx: int) -> str:
@@ -298,6 +304,7 @@ class Dashboard:
         # Build pane divs and per-pane JS blocks
         pane_divs = []
         pane_scripts = []
+        _pane_smoothing_configs = []   # collected from child panes
 
         n_panes = len(self._panes)
         for i, pane in enumerate(self._panes):
@@ -377,6 +384,12 @@ class Dashboard:
                 f"    firstSeries.push({first_var});"
             )
 
+            # ── Collect smoothing configs from this pane (with namespaced var names) ──
+            n_pane_series = len(pane._series)
+            for sc_idx, sc in enumerate(getattr(pane, "_smoothing_configs", [])):
+                target_idx = sc["series_index"] if sc["series_index"] >= 0 else n_pane_series + sc["series_index"]
+                _pane_smoothing_configs.append({**sc, "_svar": f"{prefix}s{target_idx}", "_pane": i, "_local_idx": sc_idx})
+
         divs_html = "\n".join(pane_divs)
         scripts_body = "\n    ".join(pane_scripts)
 
@@ -396,8 +409,8 @@ class Dashboard:
 
             bc = tc["buy_color"].lstrip("#")
             sr, sg, sb = int(bc[0:2], 16), int(bc[2:4], 16), int(bc[4:6], 16)
-            shade_fill = f"rgba({sr},{sg},{sb},0.10)"
-            shade_line = f"rgba({sr},{sg},{sb},0.25)"
+            shade_fill = f"rgba({sr},{sg},{sb},0.18)"
+            shade_line = "transparent"
             dc = tc["sell_color"].lstrip("#")
             sell_r, sell_g, sell_b = int(dc[0:2], 16), int(dc[2:4], 16), int(dc[4:6], 16)
 
@@ -511,8 +524,8 @@ class Dashboard:
             top_fill1      = "rgba(100,100,100,0.06)" if invert_colors else f"rgba({sr},{sg},{sb},0.28)"
             top_fill2      = "rgba(100,100,100,0.01)" if invert_colors else f"rgba({sr},{sg},{sb},0.05)"
             bot_line_color = tc["buy_color"]           if invert_colors else "rgba(100,100,100,0.28)"
-            bot_fill1      = f"rgba({sr},{sg},{sb},0.28)" if invert_colors else "rgba(100,100,100,0.01)"
-            bot_fill2      = f"rgba({sr},{sg},{sb},0.05)" if invert_colors else "rgba(100,100,100,0.06)"
+            bot_fill1      = f"rgba({sr},{sg},{sb},0.08)" if invert_colors else "rgba(100,100,100,0.01)"
+            bot_fill2      = "transparent"                  if invert_colors else "rgba(100,100,100,0.06)"
 
             slider_html = (
                 f'<div id="th-bar" style="display:flex;align-items:center;justify-content:center;'
@@ -558,9 +571,9 @@ class Dashboard:
                 f"    const _shadeSellSeries = {price_chart}.addSeries(LightweightCharts.AreaSeries, {{",
                 '        priceScaleId: "_thShadeSell",',
                 "        lineWidth: 1,",
-                f'        lineColor: "rgba({sell_r},{sell_g},{sell_b},0.25)",',
+                '        lineColor: "transparent",',
                 "        lineType: 2,",
-                f'        topColor: "rgba({sell_r},{sell_g},{sell_b},0.10)",',
+                '        topColor: "transparent",',
                 '        bottomColor: "transparent",',
                 "        crosshairMarkerVisible: false,",
                 "        pointMarkersVisible: false,",
@@ -642,7 +655,7 @@ class Dashboard:
                 "        return m;",
                 "    }",
                 "",
-                f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}));",
+                f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, []);  // markers hidden",
                 f"    _shadeSeries.setData(_buildShade({thr0}));",
                 f"    _shadeSellSeries.setData(_buildShadeSell({thr0}));",
                 "",
@@ -657,14 +670,29 @@ class Dashboard:
                 "",
                 "    // Stats overlay element — injected into equity pane's container div",
                 "    let _statsEl = null;",
+                "    let _statsTblEl = null;",
+                "    let _statsCollapsed = false;",
                 "    if (_eqPaneIdx >= 0) {",
                 f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
                 "        _statsEl = document.createElement('div');",
                 f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
                 f"background:{'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'};"
                 f"backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);"
-                f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:8px 12px;pointer-events:none;"
+                f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:6px 12px;"
+                f"pointer-events:auto;cursor:pointer;user-select:none;"
                 f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
+                f"        const _statsHdr = document.createElement('div');",
+                f"        _statsHdr.style.cssText = 'color:rgba(255,255,255,0.4);font:9px/1.8 \\'SF Mono\\',monospace;text-align:right;letter-spacing:0.5px';",
+                f"        _statsHdr.textContent = '\\u25be STATS';",
+                "        _statsTblEl = document.createElement('table');",
+                "        _statsTblEl.style.cssText = 'border-collapse:collapse';",
+                "        _statsEl.appendChild(_statsHdr);",
+                "        _statsEl.appendChild(_statsTblEl);",
+                "        _statsEl.addEventListener('click', function() {",
+                "            _statsCollapsed = !_statsCollapsed;",
+                "            _statsTblEl.style.display = _statsCollapsed ? 'none' : 'table';",
+                "            _statsHdr.textContent = _statsCollapsed ? '\\u25b8 STATS' : '\\u25be STATS';",
+                "        });",
                 "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
                 "    }",
                 "",
@@ -711,7 +739,7 @@ class Dashboard:
                 "    }",
                 "",
                 "    function _updateStats(res) {",
-                "        if (!_statsEl) return;",
+                "        if (!_statsEl || !_statsTblEl) return;",
                 f"        const lbl = 'color:{'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'}';",
                 f"        const val = 'color:{'rgba(255,255,255,0.92)' if is_dark else 'rgba(0,0,0,0.88)'};font-weight:600';",
                 "        const rows = [",
@@ -725,9 +753,7 @@ class Dashboard:
                 "            res.shortPct > 0 ? ['  Long', _fmtPct(res.longPct, false)] : null,",
                 "            res.shortPct > 0 ? ['  Short', _fmtPct(res.shortPct, false)] : null,",
                 "        ].filter(Boolean);",
-                "        _statsEl.innerHTML = '<table style=\"border-collapse:collapse\">' +",
-                "            rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('')",
-                "            + '</table>';",
+                "        _statsTblEl.innerHTML = rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('');",
                 "    }",
                 "",
                 f"    const _eq0 = _buildEquity({thr0});",
@@ -743,7 +769,7 @@ class Dashboard:
                 "        const thr = parseFloat(this.value);",
                 '        document.getElementById("th-label").textContent = _thrLblPfx + thr.toFixed(_tDec);',
                 "        const m = _mkrs(thr);",
-                "        _thP.setMarkers(m);",
+                "        _thP.setMarkers([]);  // arrows hidden",
                 "        _shadeSeries.setData(_buildShade(thr));",
                 "        _shadeSellSeries.setData(_buildShadeSell(thr));",
                 "        for (const pl of _thresholdLines) { pl.applyOptions({price: thr}); }",
@@ -757,6 +783,7 @@ class Dashboard:
                 "            if (_eqSeries) _eqSeries.setData(eq.eqData);",
                 "            if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData);",
                 "            _updateStats(eq);",
+                "            setTimeout(_alignScales, 50);",
                 "        }",
                 "    });",
             ])
@@ -970,14 +997,29 @@ class Dashboard:
                     f"    const _bhSeries  = _eqPaneIdx >= 0 ? (typeof p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 !== 'undefined' ? p{tc['equity_pane'] if tc.get('equity_pane') is not None else 0}_s1 : null) : null;",
                     "",
                     "    let _statsEl = null;",
+                    "    let _statsTblEl = null;",
+                    "    let _statsCollapsed = false;",
                     "    if (_eqPaneIdx >= 0) {",
                     f"        const _epDiv = document.getElementById('pane' + _eqPaneIdx);",
                     "        _statsEl = document.createElement('div');",
                     f"        _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;"
                     f"background:{'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'};"
                     f"backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);"
-                    f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:8px 12px;pointer-events:none;"
+                    f"border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:6px 12px;"
+                    f"pointer-events:auto;cursor:pointer;user-select:none;"
                     f"font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';",
+                    f"        const _statsHdr = document.createElement('div');",
+                    f"        _statsHdr.style.cssText = 'color:rgba(255,255,255,0.4);font:9px/1.8 \\'SF Mono\\',monospace;text-align:right;letter-spacing:0.5px';",
+                    f"        _statsHdr.textContent = '\\u25be STATS';",
+                    "        _statsTblEl = document.createElement('table');",
+                    "        _statsTblEl.style.cssText = 'border-collapse:collapse';",
+                    "        _statsEl.appendChild(_statsHdr);",
+                    "        _statsEl.appendChild(_statsTblEl);",
+                    "        _statsEl.addEventListener('click', function() {",
+                    "            _statsCollapsed = !_statsCollapsed;",
+                    "            _statsTblEl.style.display = _statsCollapsed ? 'none' : 'table';",
+                    "            _statsHdr.textContent = _statsCollapsed ? '\\u25b8 STATS' : '\\u25be STATS';",
+                    "        });",
                     "        if (_epDiv) { _epDiv.style.position='relative'; _epDiv.appendChild(_statsEl); }",
                     "    }",
                     "",
@@ -1020,7 +1062,7 @@ class Dashboard:
                     "    }",
                     "",
                     "    function _updateStats(res) {",
-                    "        if (!_statsEl) return;",
+                    "        if (!_statsEl || !_statsTblEl) return;",
                     f"        const lbl = 'color:{'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'}';",
                     f"        const val = 'color:{'rgba(255,255,255,0.92)' if is_dark else 'rgba(0,0,0,0.88)'};font-weight:600';",
                     "        const rows = [",
@@ -1032,9 +1074,7 @@ class Dashboard:
                     "            ['Win Rate', _fmtPct(res.wr, false)],",
                     "            ['In Mkt',  _fmtPct(res.timeMkt, false)],",
                     "        ].filter(Boolean);",
-                    "        _statsEl.innerHTML = '<table style=\"border-collapse:collapse\">' +",
-                    "            rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('')",
-                    "            + '</table>';",
+                    "        _statsTblEl.innerHTML = rows.map(([k,v]) => `<tr><td style=\"${lbl};padding:1px 8px 1px 0;white-space:nowrap\">${k}</td><td style=\"${val};text-align:right\">${v}</td></tr>`).join('');",
                     "    }",
                     "",
                     f"    const _eq0 = _buildEquity({thr0}, {_thr2});",
@@ -1042,7 +1082,7 @@ class Dashboard:
                     "    if (_bhSeries && _eq0.bhData.length) _bhSeries.setData(_eq0.bhData);",
                     "    _updateStats(_eq0);",
                 ]) + [
-                    f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, _mkrs({thr0}, {_thr2}));",
+                    f"    const _thP = LightweightCharts.createSeriesMarkers({price_s0}, []);  // markers hidden",
                     f"    _shadeSeries.setData(_buildShade({thr0}, {_thr2}));",
 
                     "",
@@ -1058,7 +1098,7 @@ class Dashboard:
                     '        document.getElementById("th-lo-label").textContent = "\\u03b8_lo\\u00a0" + lo.toFixed(_tDec);',
                     '        document.getElementById("th-hi-label").textContent = "\\u03b8_hi\\u00a0" + hi.toFixed(_tDec);',
                     "        const m = _mkrs(lo, hi);",
-                    "        _thP.setMarkers(m);",
+                    "        _thP.setMarkers([]);  // arrows hidden",
                     "        _shadeSeries.setData(_buildShade(lo, hi));",
                     "        const _msk = _buildMask(lo, hi);",
                     "        for (const s of _maskedSeries) s.setData(_msk);",
@@ -1088,29 +1128,145 @@ class Dashboard:
                     "    });",
                 ])
 
+        # ── Smoothing sliders from child panes — deduplicated by label ─────
+        # Group configs by label so same-label sliders share one control.
+        from collections import defaultdict as _dd
+        _sm_by_label = _dd(list)
+        for sc in _pane_smoothing_configs:
+            _sm_by_label[sc["label"]].append(sc)
+
+        smoothing_html = ""
+        smoothing_js   = ""
+        _lbl_c = "rgba(255,255,255,0.88)" if is_dark else "rgba(0,0,0,0.78)"
+        for global_idx, (lbl, group) in enumerate(_sm_by_label.items()):
+            sc  = group[0]          # use first entry for slider config
+            acc = sc["color"]
+            sid = f"db-sm-slider-{global_idx}"
+            lid = f"db-sm-label-{global_idx}"
+            # All series vars that this label drives (one per pane in the group)
+            all_svars = [g["_svar"] for g in group]
+
+            if sc["mode"] == "variants":
+                keys     = sc["variants_keys"]
+                n_var    = len(keys)
+                init_idx = sc["variants_init"]
+                init_key = keys[init_idx]
+                var_data_id = f"_dbSmVarData{global_idx}"
+                var_keys_id = f"_dbSmVarKeys{global_idx}"
+                smoothing_html += (
+                    f'<div style="display:flex;align-items:center;justify-content:center;'
+                    f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
+                    f'<span id="{lid}" style="color:{_lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:72px\">"
+                    f'{lbl} {init_key}</span>'
+                    f'<input id="{sid}" type="range" min="0" max="{n_var - 1}" step="1" '
+                    f'value="{init_idx}" style="width:220px;cursor:pointer;accent-color:{acc}">'
+                    f'<span style="min-width:60px"></span>'
+                    f'</div>\n'
+                )
+                # Build JS: one slider drives all series in the group (dedup by label)
+                js_lines_v = [f"    // \u2500\u2500 Smoothing slider #{global_idx} (variants) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"]
+                for gi, g in enumerate(group):
+                    gdata_id = f"_dbSmVarData{global_idx}_{gi}"
+                    init_idx_g = g["variants_init"]
+                    js_lines_v.append(f"    const {gdata_id} = {json.dumps(g['variants_data'], separators=(',', ':'))};")
+                    js_lines_v.append(f"    {g['_svar']}.setData({gdata_id}[{init_idx_g}]);")
+                js_lines_v += [
+                    f"    const {var_keys_id} = {json.dumps(keys, separators=(',', ':'))};",
+                    f"    document.getElementById('{sid}').addEventListener('input', function() {{",
+                    f"        const idx = parseInt(this.value);",
+                    f"        document.getElementById('{lid}').textContent = '{lbl} ' + {var_keys_id}[idx];",
+                ]
+                for gi, g in enumerate(group):
+                    gdata_id = f"_dbSmVarData{global_idx}_{gi}"
+                    js_lines_v.append(f"        {g['_svar']}.setData({gdata_id}[idx]);")
+                js_lines_v += ["    });", ""]
+                smoothing_js += "\n".join(js_lines_v)
+            else:
+                # ── SMA/EMA mode: deduplicated — drive all series in group ──
+                win_init = sc["window_init"]
+                smoothing_html += (
+                    f'<div style="display:flex;align-items:center;'
+                    f'gap:10px;background:transparent;padding:4px 16px;white-space:nowrap;height:36px">'
+                    f'<span id="{lid}" style="color:{_lbl_c};'
+                    f"font:11px/1 'SF Mono','Consolas',monospace;min-width:100px\">"
+                    f'{lbl} {win_init}</span>'
+                    f'<input id="{sid}" type="range" '
+                    f'min="{sc["window_min"]}" max="{sc["window_max"]}" step="{sc["window_step"]}" '
+                    f'value="{win_init}" style="width:220px;cursor:pointer;accent-color:{acc}">'
+                    f'</div>\n'
+                )
+                mode = sc["mode"]
+                js_lines = []
+                for gi, g in enumerate(group):
+                    raw_id = f"_dbSmRaw{global_idx}_{gi}"
+                    if mode == "ema":
+                        cfn = (f"function _dbSmCmp{global_idx}_{gi}(rd,win){{"
+                               "const k=2/(win+1);let e=null;const o=[];"
+                               "for(const d of rd){e=e===null?d.value:d.value*k+e*(1-k);o.push({time:d.time,value:e});}"
+                               "return o;}")
+                    else:
+                        cfn = (f"function _dbSmCmp{global_idx}_{gi}(rd,win){{"
+                               "const o=[];let s=0,b=[];"
+                               "for(const d of rd){b.push(d.value);s+=d.value;"
+                               "if(b.length>win){s-=b.shift();}o.push({time:d.time,value:s/b.length});}"
+                               "return o;}")
+                    js_lines += [
+                        f"    const {raw_id} = {json.dumps(g['raw_data'], separators=(',', ':'))};",
+                        f"    {cfn}",
+                        f"    {g['_svar']}.setData(_dbSmCmp{global_idx}_{gi}({raw_id},{win_init}));",
+                    ]
+                js_lines += [
+                    f"    document.getElementById('{sid}').addEventListener('input', function() {{",
+                    f"        const win = parseInt(this.value);",
+                    f"        document.getElementById('{lid}').textContent = '{lbl} ' + win;",
+                ]
+                for gi, g in enumerate(group):
+                    js_lines.append(f"        {g['_svar']}.setData(_dbSmCmp{global_idx}_{gi}(_dbSmRaw{global_idx}_{gi},win));")
+                js_lines += ["    });", ""]
+                smoothing_js += "\n".join(js_lines)
+
+        if smoothing_html:
+            divs_html += "\n" + smoothing_html
+        if smoothing_js:
+            slider_js = slider_js + "\n    " + smoothing_js.replace("\n", "\n    ")
+
         # Crosshair + time scale sync JS
         sync_js = """
-    // ── Initial fit: all charts fit their own content, then sync by LOGICAL RANGE ─
-    for (let i = 0; i < charts.length; i++) charts[i].timeScale().fitContent();
+    // ── Initial fit: chart[0] sets the master range; all others match by TIME ─
+    charts[0].timeScale().fitContent();
     setTimeout(() => {
-        const range = charts[0].timeScale().getVisibleLogicalRange();
+        const range = charts[0].timeScale().getVisibleRange();
         if (range) {
-            for (let j = 1; j < charts.length; j++) {
-                charts[j].timeScale().setVisibleLogicalRange(range);
+            for (let j = 0; j < charts.length; j++) {
+                charts[j].timeScale().setVisibleRange(range);
             }
         }
-    }, 50);
+    }, 300);
+    // ── Force equal price-scale width so all panes align horizontally ─────────
+    let _lastMaxW = 0, _alignStable = 0;
+    function _alignScales() {
+        const widths = charts.map(c => { try { return c.priceScale('right').width(); } catch(e) { return 0; } });
+        const maxW = Math.max(60, ...widths);
+        if (maxW !== _lastMaxW) {
+            _lastMaxW = maxW;
+            _alignStable = 0;
+            charts.forEach(c => c.applyOptions({rightPriceScale:{minimumWidth:maxW}}));
+        }
+        if (++_alignStable < 20) requestAnimationFrame(_alignScales);
+    }
+    setTimeout(_alignScales, 60);
 
-    // ── Sync time scales (scroll / zoom) — logical range keeps bar positions identical ──
+    // ── Sync time scales (scroll / zoom) — time range keeps dates identical ──
     let _syncing = false;
     function syncTimeScales(srcIdx) {
-        charts[srcIdx].timeScale().subscribeVisibleLogicalRangeChange(() => {
+        charts[srcIdx].timeScale().subscribeVisibleTimeRangeChange(() => {
             if (_syncing) return;
             _syncing = true;
-            const range = charts[srcIdx].timeScale().getVisibleLogicalRange();
+            const range = charts[srcIdx].timeScale().getVisibleRange();
             if (range) {
                 for (let j = 0; j < charts.length; j++) {
-                    if (j !== srcIdx) charts[j].timeScale().setVisibleLogicalRange(range);
+                    if (j !== srcIdx) charts[j].timeScale().setVisibleRange(range);
                 }
             }
             _syncing = false;
@@ -1118,28 +1274,35 @@ class Dashboard:
     }
     for (let i = 0; i < charts.length; i++) syncTimeScales(i);
 
-    // ── Sync crosshairs ─────────────────────────────────────────
-    function syncCrosshair(srcIdx) {
-        charts[srcIdx].subscribeCrosshairMove(param => {
-            for (let j = 0; j < charts.length; j++) {
-                if (j === srcIdx) continue;
-                if (!param || !param.logical === null) {
-                    charts[j].clearCrosshairPosition();
-                } else if (firstSeries[j] && param.time) {
-                    charts[j].setCrosshairPosition(NaN, param.time, firstSeries[j]);
-                } else {
-                    charts[j].clearCrosshairPosition();
+    // ── Crosshair sync across panes ────────────────────────────
+    let _csSync = false;
+    for (let i = 0; i < charts.length; i++) {
+        charts[i].subscribeCrosshairMove(param => {
+            if (_csSync) return;
+            _csSync = true;
+            if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+                for (let j = 0; j < charts.length; j++) {
+                    if (j !== i) charts[j].clearCrosshairPosition();
+                }
+            } else {
+                for (let j = 0; j < charts.length; j++) {
+                    if (j !== i && firstSeries[j]) {
+                        charts[j].setCrosshairPosition(
+                            firstSeries[j].coordinateToPrice(param.point.y) ?? 0,
+                            param.time, firstSeries[j]
+                        );
+                    }
                 }
             }
+            _csSync = false;
         });
     }
-    for (let i = 0; i < charts.length; i++) syncCrosshair(i);
 
     // ── Resize ──────────────────────────────────────────────────
     window.addEventListener('resize', () => {
         charts[0].timeScale().fitContent();
-        const r = charts[0].timeScale().getVisibleLogicalRange();
-        if (r) for (let j = 1; j < charts.length; j++) charts[j].timeScale().setVisibleLogicalRange(r);
+        const r = charts[0].timeScale().getVisibleRange();
+        if (r) for (let j = 1; j < charts.length; j++) charts[j].timeScale().setVisibleRange(r);
     });"""
 
         # Theme may override body background with CSS marble/texture
