@@ -6,10 +6,12 @@ Works in Jupyter notebooks (inline), Dash apps, Streamlit, and standalone HTML.
 
 import json
 import math
+import re
 import html as html_module
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+import numpy as np
 import pandas as pd
 
 from .themes import THEMES
@@ -41,6 +43,90 @@ class Chart:
     """
 
     LC_VERSION = "5.1.0"
+
+    # ── Execution utility ─────────────────────────────────────────────────
+
+    @staticmethod
+    def apply_execution(signal, returns, execution=1, open_returns=None, carry_in=True):
+        """Apply an execution lag to a signal and return daily P&L.
+
+        Lag = number of bars between signal and FILL (position entry).
+        Signal fires at close[T].  Fill happens at close[T + execution].
+        First return earned starts the bar AFTER the fill.
+
+        Parameters
+        ----------
+        signal : pd.Series  Binary (0/1) or continuous signal.
+        returns : pd.Series  Close-to-close returns aligned with signal.
+        execution : int or ``"NO"``
+            ``0``  — fill at close[T] (precise, same bar).  Earn cc_ret[T+1].
+            ``1``  — fill at close[T+1] (MOC next bar, default).  Earn cc_ret[T+2].
+            ``N``  — fill at close[T+N].  Earn cc_ret[T+N+1].
+            ``"NO"`` — fill at open[T+1] (MOO).  Entry bar earns oc_ret;
+                  subsequent holding bars earn cc_ret (close-to-close).
+        open_returns : pd.Series, optional
+            Open-to-close (intraday) returns: ``close / open - 1``.
+            Required when ``execution="NO"`` (MOO).
+
+        Returns
+        -------
+        pd.Series — daily strategy returns.
+        """
+        import warnings as _w
+        _is_moo = False
+        if isinstance(execution, str):
+            _exec = execution.upper()
+            if _exec in ("NO", "NM"):
+                if _exec == "NM":
+                    _w.warn(
+                        "execution='NM' is deprecated; use execution='NO' (next open).",
+                        UserWarning, stacklevel=2,
+                    )
+                if open_returns is None:
+                    raise ValueError(
+                        "execution='NO' (MOO) requires open_returns. "
+                        "Pass open_returns=<open-to-close intraday returns (close/open-1)> or use execution=1 (MOC)."
+                    )
+                else:
+                    cov = open_returns.replace(0, float("nan")).notna().mean()
+                    if cov < 0.95:
+                        _w.warn(
+                            f"execution='NO': open_returns coverage is only {cov:.1%}; "
+                            "missing bars earn 0.",
+                            UserWarning, stacklevel=2,
+                        )
+                    ret, lag = open_returns, 1
+                    _is_moo = True
+            else:
+                raise ValueError(
+                    f"Unknown execution={execution!r}. "
+                    "Use an integer (0=same_bar, 1=MOC, 2=lag2, N=lagN) or 'NO' (next open / MOO)."
+                )
+        elif isinstance(execution, int):
+            lag, ret = execution + 1, returns
+        else:
+            raise ValueError(
+                f"execution must be an integer or 'NO', got {execution!r}."
+            )
+
+        shifted = signal.shift(lag)
+        if carry_in:
+            # Assume position was already established before the window —
+            # fill the first `lag` NaN bars with the first signal value.
+            shifted = shifted.fillna(signal.iloc[0])
+        else:
+            shifted = shifted.fillna(0)
+
+        if _is_moo:
+            # MOO: entry bar earns open→close; holding bars earn close→close
+            _prev = shifted.shift(1)
+            _prev = _prev.fillna(shifted.iloc[0] if carry_in else 0)
+            entry = (shifted > 0) & (_prev <= 0)
+            blended = returns.copy()
+            blended[entry] = open_returns[entry]
+            return shifted * blended
+
+        return shifted * ret
 
     # ── Init ──────────────────────────────────────────────────────────────
 
@@ -417,6 +503,203 @@ class Chart:
                 "scaleMargins": {"top": 0, "bottom": 0},
             },
         })
+        return self
+
+    def forecast(
+        self,
+        pred_df: pd.DataFrame,
+        close: Optional[pd.Series] = None,
+        threshold: Optional[float] = None,
+        pred_cols: Optional[List[str]] = None,
+        path: str = "latest",
+        path_color: Optional[str] = None,
+        shade: bool = True,
+        series_index: int = 0,
+        buy_color: Optional[str] = None,
+        sell_color: Optional[str] = None,
+    ) -> "Chart":
+        """Overlay model forecast paths and entry/exit signals on the chart.
+
+        Designed for TKAN / NN model output where each row is a multi-step
+        price prediction from that date's anchor close.
+
+        Parameters
+        ----------
+        pred_df : DataFrame
+            Index = trade dates.  Columns = prediction steps, named ``d1``, ``d2``,
+            … ``dN`` (auto-detected) or specified via *pred_cols*.
+            Values are **price ratios** relative to the anchor close (e.g. 1.02 = +2%).
+            If *close* is ``None``, values are treated as absolute prices instead.
+        close : Series, optional
+            Anchor close prices indexed by trade date (same index as pred_df).
+            Pass the raw price series so ratios can be converted to price levels.
+            If omitted, pred_df is assumed to already contain absolute prices.
+        threshold : float, optional
+            Entry signal threshold applied to ``max(d1…dN)`` per row.
+            Rows where the max predicted ratio meets or exceeds *threshold* trigger
+            an entry signal (arrowUp / shading).  E.g. ``threshold=1.015`` → +1.5%.
+        pred_cols : list[str], optional
+            Explicit column names to use as prediction steps.
+            Defaults to all columns matching ``d<integer>`` sorted numerically.
+        path : str
+            ``"latest"`` (default) — draw the most recent date's forecast as a line
+            extending past the last available price bar.
+            ``"none"`` — skip the forecast path line.
+        path_color : str, optional
+            CSS colour for the forecast path line.  Defaults to the theme's up colour.
+        shade : bool
+            If ``True`` (default), shade chart background during active-signal periods.
+        series_index : int
+            Which series to attach entry/exit markers to (default 0 = first series).
+        buy_color / sell_color : str, optional
+            Marker colours.  Defaults to the theme's candlestick up/down colours.
+
+        Examples
+        --------
+        ::
+
+            from signum import Chart, sfera
+
+            ohlc  = sfera.ohlc("CAC", start="2015-01-01")
+            close = sfera.total_return("CACT", start="2015-01-01")
+
+            chart = (
+                Chart(theme="dark", height=500)
+                .candlestick(ohlc)
+                .forecast(pred_df, close=close, threshold=1.015)
+            )
+        """
+        # ── 1. Detect prediction columns ──────────────────────────────────
+        if pred_cols is None:
+            pred_cols = sorted(
+                [c for c in pred_df.columns if re.match(r"^d\d+$", c)],
+                key=lambda c: int(c[1:]),
+            )
+        if not pred_cols:
+            raise ValueError(
+                "forecast(): no prediction columns found.  "
+                "Name them 'd1', 'd2', … or pass pred_cols explicitly."
+            )
+        n_steps = len(pred_cols)
+
+        # ── 2. Convert ratios → absolute prices ───────────────────────────
+        if close is not None:
+            common = pred_df.index.intersection(close.index)
+            abs_df = pred_df.loc[common, pred_cols].multiply(
+                close.loc[common], axis=0
+            )
+        else:
+            common = pred_df.index
+            abs_df = pred_df[pred_cols].copy()
+
+        # ── 3. Build signal series (per-date: 1 = signal ON) ──────────────
+        up_clr = buy_color or self._theme.get("candlestick", {}).get("upColor", "#26a69a")
+        dn_clr = sell_color or self._theme.get("candlestick", {}).get("downColor", "#ef5350")
+
+        if threshold is not None and close is not None:
+            # Signal fires when max predicted ratio >= threshold
+            signal = (pred_df.loc[common, pred_cols].max(axis=1) >= threshold).astype(int)
+        else:
+            signal = pd.Series(0, index=common)
+
+        # ── 4. Entry / exit markers at state transitions ───────────────────
+        prev = 0
+        for date, val in signal.items():
+            t_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)
+            if val == 1 and prev == 0:
+                self._markers.setdefault(series_index, []).append({
+                    "time": t_str,
+                    "position": "belowBar",
+                    "shape": "arrowUp",
+                    "color": up_clr,
+                    "text": "",
+                })
+            elif val == 0 and prev == 1:
+                self._markers.setdefault(series_index, []).append({
+                    "time": t_str,
+                    "position": "aboveBar",
+                    "shape": "arrowDown",
+                    "color": dn_clr,
+                    "text": "",
+                })
+            prev = val
+
+        # ── 5. Background shading during active-signal periods ─────────────
+        if shade and signal.any():
+            hex_c = up_clr.lstrip("#")
+            if len(hex_c) == 6:
+                r, g, b = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            else:
+                r, g, b = 38, 166, 154  # fallback teal
+            fill = f"rgba({r},{g},{b},0.08)"
+            line_clr = f"rgba({r},{g},{b},0.16)"
+            shade_records = [
+                {"time": (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)),
+                 "value": int(v)}
+                for d, v in signal.items()
+            ]
+            shade_opts = {
+                "priceScaleId": "_fc_shade",
+                "lineWidth": 1,
+                "lineColor": "rgba(0,0,0,0)",
+                "lineType": 2,
+                "topColor": fill,
+                "bottomColor": "transparent",
+                "crosshairMarkerVisible": False,
+                "crosshairMarkerRadius": 0,
+                "pointMarkersVisible": False,
+                "lastValueVisible": False,
+                "priceLineVisible": False,
+            }
+            self._series.append({
+                "type": "AreaSeries",
+                "data": shade_records,
+                "options": shade_opts,
+                "price_scale": {
+                    "id": "_fc_shade",
+                    "scaleMargins": {"top": 0, "bottom": 0},
+                },
+            })
+
+        # ── 6. Forecast path for the latest date ──────────────────────────
+        if path == "latest" and not abs_df.empty:
+            last_date = abs_df.index[-1]
+            last_prices = abs_df.iloc[-1]  # Series: d1..dN → absolute prices
+
+            # Forward dates: N business days starting the day after last_date
+            fwd_dates = pd.bdate_range(
+                start=last_date + pd.Timedelta("1D"),
+                periods=n_steps,
+            )
+
+            # Anchor point = close on last_date (start of path)
+            if close is not None and last_date in close.index:
+                anchor_price = float(close.loc[last_date])
+            else:
+                anchor_price = float(last_prices.iloc[0])  # fallback
+
+            path_data = [{"time": last_date.strftime("%Y-%m-%d"), "value": anchor_price}]
+            for fwd_d, price in zip(fwd_dates, last_prices.values):
+                if np.isfinite(price):
+                    path_data.append({"time": fwd_d.strftime("%Y-%m-%d"), "value": float(price)})
+
+            pc = path_color or up_clr
+            path_opts = {
+                "color": pc,
+                "lineWidth": 2,
+                "lineStyle": 1,  # dashed
+                "crosshairMarkerVisible": True,
+                "crosshairMarkerRadius": 5,
+                "lastValueVisible": True,
+                "priceLineVisible": False,
+                "title": "forecast",
+            }
+            self._series.append({
+                "type": "LineSeries",
+                "data": path_data,
+                "options": path_opts,
+            })
+
         return self
 
     def stats_legend(
