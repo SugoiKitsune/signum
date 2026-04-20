@@ -316,10 +316,11 @@ class Dashboard:
         _MAP = {"NO": "EXEC NO (NEXT OPEN)", 0: "EXEC 0 (SAME BAR)", 1: "EXEC 1 (NEXT CLOSE)"}
         return _MAP.get(execution, f"EXEC {execution}")
 
-    def __init__(self, panes=None, theme=None, titles=None, gap=2, logo=True, execution=1):
+    def __init__(self, panes=None, theme=None, titles=None, gap=2, logo=True, execution=1, show_execution=None):
         self._panes: List[Chart] = panes or []
         self._titles: List[str] = titles or []
         self._logo = logo
+        self._show_execution = show_execution  # None = auto (show only if threshold_control used)
         self._theme_explicit = theme is not None
         if theme:
             self._theme_name = theme.lower()
@@ -599,7 +600,8 @@ class Dashboard:
         pane_divs, pane_scripts = [], []
         _pane_smoothing_configs = []
         n_panes = len(self._panes)
-        _exec_hdr = self._execution_badge_text(self._execution)
+        _show = self._show_execution if self._show_execution is not None else bool(self._threshold_config)
+        _exec_hdr = self._execution_badge_text(self._execution) if _show else ""
 
         for i, pane in enumerate(self._panes):
             div_id, chart_var, prefix = f"pane{i}", f"chart{i}", f"p{i}_"
@@ -650,6 +652,9 @@ class Dashboard:
             ts["visible"] = is_last
             chart_opts["timeScale"] = ts
             opts = json.dumps(chart_opts, separators=(",", ":"))
+            fmt_js = pane._get_formatter_js()
+            if fmt_js:
+                opts = pane._inject_formatter_into_opts(opts, fmt_js)
             series_js = pane._build_series_js(var_prefix=prefix, chart_var=chart_var)
             first_var = f"{prefix}s0" if pane._series else "null"
             pane_scripts.append(

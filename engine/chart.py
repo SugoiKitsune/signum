@@ -137,6 +137,7 @@ class Chart:
         height: int = 400,
         watermark: Optional[str] = None,
         logo: bool = True,
+        y_format: Optional[str] = None,
     ):
         self._theme_name = theme.lower()
         self._theme = THEMES.get(self._theme_name, THEMES["dark"])
@@ -144,6 +145,7 @@ class Chart:
         self._height = height
         self._watermark = watermark
         self._logo = logo
+        self._y_format = y_format  # 'kmb' for K/M/B suffixes, 'percent' for %
         self._series: List[Dict[str, Any]] = []
         self._price_lines: List[Dict[str, Any]] = []
         self._markers: Dict[int, List[Dict[str, Any]]] = {}
@@ -921,6 +923,37 @@ class Chart:
 
     # ── Build HTML ────────────────────────────────────────────────────────
 
+    def _get_formatter_js(self) -> str:
+        """Return raw JS function literal for price formatting, or empty string."""
+        if not self._y_format:
+            return ""
+        if self._y_format == "kmb":
+            return (
+                "function(p){var a=Math.abs(p);"
+                "if(a>=1e9)return(p/1e9).toFixed(2)+'B';"
+                "if(a>=1e6)return(p/1e6).toFixed(2)+'M';"
+                "if(a>=1e3)return(p/1e3).toFixed(1)+'K';"
+                "return p.toFixed(0);}"
+            )
+        if self._y_format == "percent":
+            return "function(p){return p.toFixed(1)+'%';}"
+        return ""
+
+    def _build_y_format_js(self, chart_var: str = "chart") -> str:
+        """Return JS snippet to apply a custom y-axis price formatter."""
+        fmt = self._get_formatter_js()
+        if not fmt:
+            return ""
+        return f'{chart_var}.applyOptions({{localization:{{priceFormatter:{fmt}}}}});'
+
+    @staticmethod
+    def _inject_formatter_into_opts(opts_json: str, formatter_js: str) -> str:
+        """Inject a localization.priceFormatter into a JSON options string."""
+        if not formatter_js:
+            return opts_json
+        # Insert before the final closing brace
+        return opts_json[:-1] + ',"localization":{"priceFormatter":' + formatter_js + '}}'
+
     def _build_chart_options(self) -> dict:
         opts = {**self._theme.get("chart", {})}
         if self._width:
@@ -1295,7 +1328,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 {_glass_close}{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
 try {{
-    const chart = LightweightCharts.createChart(document.getElementById('fc'), {chart_opts});
+    const chart = LightweightCharts.createChart(document.getElementById('fc'), {self._inject_formatter_into_opts(chart_opts, self._get_formatter_js())});
     {series_js}
     chart.timeScale().fitContent();
     {slider_js}
