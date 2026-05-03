@@ -77,11 +77,11 @@ _OP_ALIAS = {">=": "above", ">": "above_strict", "<=": "below", "<": "below_stri
 # ── Reusable JS snippets ─────────────────────────────────────────────────────
 
 _JS_SYNC = """
-    // ── Fit + sync ──
+    // ── Fit + sync (logical-range API for LWC v5) ──
     charts[0].timeScale().fitContent();
     setTimeout(() => {
-        const range = charts[0].timeScale().getVisibleRange();
-        if (range) for (let j = 0; j < charts.length; j++) charts[j].timeScale().setVisibleRange(range);
+        const range = charts[0].timeScale().getVisibleLogicalRange();
+        if (range) for (let j = 0; j < charts.length; j++) charts[j].timeScale().setVisibleLogicalRange(range);
     }, 300);
     let _lastMaxW = 0, _alignStable = 0;
     function _alignScales() {
@@ -93,10 +93,10 @@ _JS_SYNC = """
     setTimeout(_alignScales, 60);
     let _syncing = false;
     function syncTimeScales(srcIdx) {
-        charts[srcIdx].timeScale().subscribeVisibleTimeRangeChange(() => {
+        charts[srcIdx].timeScale().subscribeVisibleLogicalRangeChange(() => {
             if (_syncing) return; _syncing = true;
-            const range = charts[srcIdx].timeScale().getVisibleRange();
-            if (range) for (let j = 0; j < charts.length; j++) { if (j !== srcIdx) charts[j].timeScale().setVisibleRange(range); }
+            const range = charts[srcIdx].timeScale().getVisibleLogicalRange();
+            if (range) for (let j = 0; j < charts.length; j++) { if (j !== srcIdx) charts[j].timeScale().setVisibleLogicalRange(range); }
             _syncing = false;
         });
     }
@@ -115,11 +115,37 @@ _JS_SYNC = """
             _csSync = false;
         });
     }
-    window.addEventListener('resize', () => {
+    function _resizeChartToPane(ci) {
+        const el = document.getElementById('pane' + ci);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(r.width));
+        const h = Math.max(1, Math.floor(r.height));
+        try {
+            if (typeof charts[ci].resize === 'function') charts[ci].resize(w, h);
+            else charts[ci].applyOptions({width:w, height:h});
+        } catch(e) {}
+    }
+    function _resizeAllCharts() {
+        for (let j = 0; j < charts.length; j++) _resizeChartToPane(j);
+    }
+    function _reflowAllCharts() {
+        _resizeAllCharts();
         charts[0].timeScale().fitContent();
-        const r = charts[0].timeScale().getVisibleRange();
-        if (r) for (let j = 1; j < charts.length; j++) charts[j].timeScale().setVisibleRange(r);
-    });"""
+        const r = charts[0].timeScale().getVisibleLogicalRange();
+        if (r) for (let j = 1; j < charts.length; j++) charts[j].timeScale().setVisibleLogicalRange(r);
+    }
+    _reflowAllCharts();
+    requestAnimationFrame(_reflowAllCharts);
+    setTimeout(_reflowAllCharts, 80);
+    if (typeof ResizeObserver !== 'undefined') {
+        const _paneRO = new ResizeObserver(() => { _reflowAllCharts(); });
+        for (let j = 0; j < charts.length; j++) {
+            const el = document.getElementById('pane' + j);
+            if (el) _paneRO.observe(el);
+        }
+    }
+    window.addEventListener('resize', _reflowAllCharts);"""
 
 
 def _js_shade_opts(scale_id, line_color="transparent", top_color="transparent", bottom_color="transparent"):
@@ -174,6 +200,7 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
     function _buildEquity({thr_params}) {{
         let pos=0,prevPos=0,eq=100,bh=100;
         if (_carryIn && _td.length > 0) {{
+            const i = 0;
             const _initSig = _td[0] ? _td[0].value : 0;
             const sig = _initSig;
             prevPos = {eq_pos_expr};
@@ -598,6 +625,7 @@ class Dashboard:
 
         lc_js = _get_lc_js()
         pane_divs, pane_scripts = [], []
+        kmb_chart_vars = []
         _pane_smoothing_configs = []
         n_panes = len(self._panes)
         _show = self._show_execution if self._show_execution is not None else bool(self._threshold_config)
@@ -660,6 +688,8 @@ class Dashboard:
             pane_scripts.append(
                 f"const {chart_var} = LightweightCharts.createChart(document.getElementById('{div_id}'), {opts});\n"
                 f"    charts.push({chart_var});\n    {series_js}\n    firstSeries.push({first_var});")
+            if pane._y_format == "kmb":
+                kmb_chart_vars.append(chart_var)
 
             n_pane_series = len(pane._series)
             for sc_idx, sc in enumerate(getattr(pane, "_smoothing_configs", [])):
@@ -668,6 +698,69 @@ class Dashboard:
 
         divs_html = "\n".join(pane_divs)
         scripts_body = "\n    ".join(pane_scripts)
+
+        # ── Y-scale switch (Auto/K/M/B/Raw) for kmb panes ───────────────
+        _ys_html = ""
+        if kmb_chart_vars:
+            _fg = "rgba(255,255,255,0.82)" if is_dark else "rgba(0,0,0,0.78)"
+            _bgc = "rgba(0,0,0,0.28)" if is_dark else "rgba(255,255,255,0.62)"
+            _br = "rgba(255,255,255,0.16)" if is_dark else "rgba(0,0,0,0.12)"
+            _btn_c = "rgba(255,255,255,0.65)" if is_dark else "rgba(0,0,0,0.55)"
+            _bg2 = "rgba(20,20,30,0.78)" if is_dark else "rgba(248,248,248,0.90)"
+            _ys_html = (
+                '<div id="yscale-overlay" style="position:absolute;top:8px;right:8px;z-index:10;'
+                'display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
+                f'<button id="yscale-btn" title="Y-axis units" '
+                f'onclick="var p=document.getElementById(\'yscale-panel\');p.style.display=p.style.display===\'none\'?\'flex\':\'none\'" '
+                f'style="background:none;border:none;cursor:pointer;padding:3px 5px;color:{_btn_c};'
+                f'font-size:14px;line-height:1;opacity:0.28;transition:opacity 0.15s;border-radius:4px" '
+                f'onmouseenter="this.style.opacity=\'0.90\'" onmouseleave="this.style.opacity=\'0.28\'">&#9881;</button>'
+                f'<div id="yscale-panel" style="display:none;align-items:center;gap:6px;'
+                f'background:{_bg2};border:1px solid {_br};border-radius:7px;padding:4px 8px;'
+                f'box-shadow:0 2px 8px rgba(0,0,0,0.20)">'
+                f'<span style="color:{_fg};font:10px/1 sans-serif;white-space:nowrap">Units</span>'
+                f'<select id="yscale-select" style="height:22px;min-width:76px;border-radius:5px;'
+                f'border:1px solid {_br};background:{_bg2};color:{_fg};font:10px/1 sans-serif;'
+                f'padding:2px 6px;outline:none">'
+                '<option value="AUTO" selected>Auto</option>'
+                '<option value="K">Thousands</option>'
+                '<option value="M">Millions</option>'
+                '<option value="B">Billions</option>'
+                '<option value="RAW">Raw</option>'
+                '</select></div></div>'
+            )
+            _ys_targets = "[" + ",".join(kmb_chart_vars) + "]"
+            _ys_js = f"""
+    (function() {{
+        function _mkScaleFmt(mode) {{
+            return function(p) {{
+                var a = Math.abs(p), d = 1, s = '', z = 2;
+                if (mode === 'K') {{ d = 1e3; s = 'K'; z = a/1e3 < 10 ? 1 : 0; }}
+                else if (mode === 'M') {{ d = 1e6; s = 'M'; z = a/1e6 < 10 ? 1 : 0; }}
+                else if (mode === 'B') {{ d = 1e9; s = 'B'; z = a/1e9 < 10 ? 1 : 0; }}
+                else if (mode === 'AUTO') {{
+                    if (a >= 1e9) {{ d = 1e9; s = 'B'; z = a/1e9 < 10 ? 1 : 0; }}
+                    else if (a >= 1e6) {{ d = 1e6; s = 'M'; z = a/1e6 < 10 ? 1 : 0; }}
+                    else if (a >= 1e3) {{ d = 1e3; s = 'K'; z = a/1e3 < 10 ? 1 : 0; }}
+                    else {{ z = 2; }}
+                }}
+                return (p / d).toFixed(z) + s;
+            }};
+        }}
+        const _ysSel = document.getElementById('yscale-select');
+        const _ysTargets = {_ys_targets};
+        if (_ysSel && _ysTargets.length) {{
+            const _apply = () => {{
+                const mode = _ysSel.value || 'AUTO';
+                const fmt = _mkScaleFmt(mode);
+                for (const c of _ysTargets) c.applyOptions({{ localization: {{ priceFormatter: fmt }} }});
+            }};
+            _apply();
+            _ysSel.addEventListener('change', _apply);
+        }}
+    }})();"""
+        else:
+            _ys_js = ""
 
         # ── Threshold slider JS ──────────────────────────────────────────
         slider_html, slider_js = "", ""
@@ -682,6 +775,8 @@ class Dashboard:
             divs_html += "\n" + sm_html
         if sm_js:
             slider_js += "\n    " + sm_js.replace("\n", "\n    ")
+        if _ys_js:
+            slider_js += "\n    " + _ys_js.replace("\n", "\n    ")
 
         # ── Background ───────────────────────────────────────────────────
         custom_bg_css = self._theme.get("background_css", "")
@@ -711,7 +806,7 @@ class Dashboard:
 <script>{lc_js}</script>
 <style>*{{margin:0;padding:0;box-sizing:border-box}}body{{{bg_css}overflow-y:auto;overflow-x:hidden;position:relative;border-radius:12px;padding-bottom:36px}}
 #signum-logo{{position:absolute;right:12px;bottom:6px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}</style>
-</head><body>{bg_svg}{_glass_open}{divs_html}{_glass_close}{_logo}
+</head><body>{bg_svg}{_glass_open}{divs_html}{_ys_html if kmb_chart_vars else ''}{_glass_close}{_logo}
 <script>
     const charts = [];
     const firstSeries = [];

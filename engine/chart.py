@@ -939,6 +939,38 @@ class Chart:
             return "function(p){return p.toFixed(1)+'%';}"
         return ""
 
+    @staticmethod
+    def _build_scale_switch_html(is_dark: bool, selected: str = "AUTO") -> str:
+        """Return floating overlay unit-switch. Position:absolute over the chart — takes no layout space."""
+        fg = "rgba(255,255,255,0.75)" if is_dark else "rgba(0,0,0,0.72)"
+        bg = "rgba(20,20,30,0.78)" if is_dark else "rgba(248,248,248,0.90)"
+        br = "rgba(255,255,255,0.14)" if is_dark else "rgba(0,0,0,0.12)"
+        btn_c = "rgba(255,255,255,0.65)" if is_dark else "rgba(0,0,0,0.55)"
+        return (
+            '<div id="yscale-overlay" style="position:absolute;top:8px;right:8px;z-index:10;'
+            'display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
+            f'<button id="yscale-btn" title="Y-axis units" '
+            f'onclick="var p=document.getElementById(\'yscale-panel\');p.style.display=p.style.display===\'none\'?\'flex\':\'none\'" '
+            f'style="background:none;border:none;cursor:pointer;padding:3px 5px;color:{btn_c};'
+            f'font-size:14px;line-height:1;opacity:0.28;transition:opacity 0.15s;border-radius:4px" '
+            f'onmouseenter="this.style.opacity=\'0.90\'" onmouseleave="this.style.opacity=\'0.28\'">&#9881;</button>'
+            f'<div id="yscale-panel" style="display:none;align-items:center;gap:6px;'
+            f'background:{bg};border:1px solid {br};border-radius:7px;padding:4px 8px;'
+            f'box-shadow:0 2px 8px rgba(0,0,0,0.20)">'
+            f'<span style="color:{fg};font:10px/1 sans-serif;white-space:nowrap">Units</span>'
+            f'<select id="yscale-select" style="height:22px;min-width:76px;border-radius:5px;'
+            f'border:1px solid {br};background:{bg};color:{fg};font:10px/1 sans-serif;'
+            f'padding:2px 6px;outline:none">'
+            f'<option value="AUTO" {"selected" if selected == "AUTO" else ""}>Auto</option>'
+            f'<option value="K" {"selected" if selected == "K" else ""}>Thousands</option>'
+            f'<option value="M" {"selected" if selected == "M" else ""}>Millions</option>'
+            f'<option value="B" {"selected" if selected == "B" else ""}>Billions</option>'
+            f'<option value="RAW" {"selected" if selected == "RAW" else ""}>Raw</option>'
+            '</select>'
+            '</div>'
+            '</div>'
+        )
+
     def _build_y_format_js(self, chart_var: str = "chart") -> str:
         """Return JS snippet to apply a custom y-axis price formatter."""
         fmt = self._get_formatter_js()
@@ -1047,13 +1079,16 @@ class Chart:
                 _logo_invert = "filter:invert(1);"
 
         # ── Threshold slider components ───────────────────────────────────
+        is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
         slider_html = ""
         slider_js = ""
         slider_extra_height = 0
+        _kmb_overlay = ""
+        if self._y_format == "kmb":
+            _kmb_overlay = self._build_scale_switch_html(is_dark_bg)
         if self._threshold_config:
             tc = self._threshold_config
             dec = tc["decimals"]
-            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
             bar_bg = "rgba(0,0,0,0.55)" if is_dark_bg else "rgba(255,255,255,0.72)"
             lbl_c = "rgba(255,255,255,0.88)" if is_dark_bg else "rgba(0,0,0,0.78)"
             cnt_c = "rgba(255,255,255,0.48)" if is_dark_bg else "rgba(0,0,0,0.42)"
@@ -1307,6 +1342,61 @@ class Chart:
         total_extra = slider_extra_height + smoothing_extra_height
         self._slider_extra_height = total_extra
 
+        _resize_js = """
+    const _fcEl = document.getElementById('fc');
+    function _resizeChartToContainer() {
+        if (!_fcEl || !_fcEl.getBoundingClientRect) return;
+        const r = _fcEl.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(r.width));
+        const h = Math.max(1, Math.floor(r.height));
+        try {
+            if (typeof chart.resize === 'function') chart.resize(w, h);
+            else chart.applyOptions({ width: w, height: h });
+        } catch (e) {}
+    }
+    function _reflowChart() {
+        _resizeChartToContainer();
+        try { chart.timeScale().fitContent(); } catch (e) {}
+    }
+    _reflowChart();
+    requestAnimationFrame(_reflowChart);
+    setTimeout(_reflowChart, 80);
+    if (typeof ResizeObserver !== 'undefined' && _fcEl) {
+        const _ro = new ResizeObserver(() => { _reflowChart(); });
+        _ro.observe(_fcEl);
+    }
+    window.addEventListener('resize', _reflowChart);
+"""
+
+        _yscale_js = ""
+        if self._y_format == "kmb":
+            _yscale_js = """
+    function _mkScaleFmt(mode) {
+        return function(p) {
+            var a = Math.abs(p), d = 1, s = '', z = 2;
+            if (mode === 'K') { d = 1e3; s = 'K'; z = a/1e3 < 10 ? 1 : 0; }
+            else if (mode === 'M') { d = 1e6; s = 'M'; z = a/1e6 < 10 ? 1 : 0; }
+            else if (mode === 'B') { d = 1e9; s = 'B'; z = a/1e9 < 10 ? 1 : 0; }
+            else if (mode === 'AUTO') {
+                if (a >= 1e9) { d = 1e9; s = 'B'; z = a/1e9 < 10 ? 1 : 0; }
+                else if (a >= 1e6) { d = 1e6; s = 'M'; z = a/1e6 < 10 ? 1 : 0; }
+                else if (a >= 1e3) { d = 1e3; s = 'K'; z = a/1e3 < 10 ? 1 : 0; }
+                else { z = 2; }
+            }
+            return (p / d).toFixed(z) + s;
+        };
+    }
+    const _ysSel = document.getElementById('yscale-select');
+    if (_ysSel) {
+        const _applyYScale = () => {
+            const mode = _ysSel.value || 'AUTO';
+            chart.applyOptions({ localization: { priceFormatter: _mkScaleFmt(mode) } });
+        };
+        _applyYScale();
+        _ysSel.addEventListener('change', _applyYScale);
+    }
+"""
+
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -1321,6 +1411,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 </style>
 </head><body>
 {bg_svg}{_glass_open}<div id="fc"></div>
+{_kmb_overlay}
 {stats_html}
 <div id="err"></div>
 {slider_html}
@@ -1330,10 +1421,10 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 try {{
     const chart = LightweightCharts.createChart(document.getElementById('fc'), {self._inject_formatter_into_opts(chart_opts, self._get_formatter_js())});
     {series_js}
-    chart.timeScale().fitContent();
+    {_resize_js}
+    {_yscale_js}
     {slider_js}
     {smoothing_js}
-    window.addEventListener('resize', () => chart.timeScale().fitContent());
 }} catch(e) {{
     var el = document.getElementById('err');
     el.style.display = 'block';
