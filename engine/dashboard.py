@@ -634,7 +634,7 @@ class Dashboard:
         # ── Auto-align all panes to a shared time union ────────────────────────
         # Insert {time:t} whitespace slots for any date a series is missing so
         # every pane has an identical bar count → LWC logical-index sync is exact.
-        _all_series = [s for p in self._panes for s in p._series]
+        _all_series = [s for p in self._panes for s in p._series if "data" in s]
         _all_times  = {r["time"] for s in _all_series for r in s["data"]}
         for s in _all_series:
             missing = _all_times - {r["time"] for r in s["data"]}
@@ -788,6 +788,66 @@ class Dashboard:
             slider_js += "\n    " + sm_js.replace("\n", "\n    ")
         if _ys_js:
             slider_js += "\n    " + _ys_js.replace("\n", "\n    ")
+
+        # ── Allocation tooltip (from any pane that has _alloc_tooltip) ───────
+        for _at_idx, _at_pane in enumerate(self._panes):
+            _at = getattr(_at_pane, "_alloc_tooltip", None)
+            if _at:
+                _at_chart_var = f"chart{_at_idx}"
+                _is_dk = self._theme_name in ("dark", "midnight", "distfit")
+                _box_bg = "rgba(10,10,26,0.75)" if _is_dk else "rgba(255,255,255,0.75)"
+                _lbl_c = "rgba(255,255,255,0.65)" if _is_dk else "rgba(0,0,0,0.60)"
+                _val_c = "rgba(255,255,255,0.90)" if _is_dk else "rgba(0,0,0,0.85)"
+                _short_c = "#ef5350" if _is_dk else "#c62828"
+                _ad_json = json.dumps(_at["data"])
+                _aa_json = json.dumps(_at["assets"])
+                _ac_json = json.dumps(_at["colors"])
+                # Calculate vertical offset for tooltip based on pane position
+                _pane_offset = sum(self._panes[i]._height for i in range(_at_idx)) + (_at_idx * 40)  # 40px for titles
+                divs_html += (
+                    f'<div id="alloc-tooltip" style="position:absolute;top:{_pane_offset + 24}px;left:8px;z-index:7;'
+                    f'background:{_box_bg};backdrop-filter:blur(12px) saturate(160%);'
+                    f'-webkit-backdrop-filter:blur(12px) saturate(160%);'
+                    f'border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:6px 10px;display:none;'
+                    f'box-shadow:0 2px 12px rgba(0,0,0,0.25);min-width:140px;">'
+                    f'<div id="alloc-items" style="font:10px/1.6 \'SF Mono\',\'Consolas\',monospace"></div>'
+                    f'<div id="alloc-totals" style="color:{_lbl_c};font:9px/1.5 \'SF Mono\',\'Consolas\',monospace;'
+                    f'margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.06)"></div>'
+                    f'</div>'
+                )
+                _at_js_lines = [
+                    f"const allocData = {_ad_json};",
+                    f"const allocAssets = {_aa_json};",
+                    f"const allocColors = {_ac_json};",
+                    "const allocTooltip = document.getElementById('alloc-tooltip');",
+                    "const allocItems = document.getElementById('alloc-items');",
+                    "const allocTotals = document.getElementById('alloc-totals');",
+                    f"{_at_chart_var}.subscribeCrosshairMove(function(param) {{",
+                    "    if (!param.time || !param.point) { allocTooltip.style.display = 'none'; return; }",
+                    "    const dateKey = String(param.time);",
+                    "    const weights = allocData[dateKey];",
+                    "    if (!weights) { allocTooltip.style.display = 'none'; return; }",
+                    "    let html = ''; let netExp = 0, grossExp = 0;",
+                    "    allocAssets.forEach(function(asset, i) {",
+                    "        const w = weights[asset] || 0;",
+                    "        netExp += w; grossExp += Math.abs(w);",
+                    "        const color = allocColors[i];",
+                    "        const dot = '<span style=\"display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:6px\"></span>';",
+                    "        const sign = w >= 0 ? '+' : ''; const wFmt = (sign + w.toFixed(1)) + '%';",
+                    f"        const tc = w < 0 ? '{_short_c}' : '{_val_c}';",
+                    "        html += '<div style=\"display:flex;justify-content:space-between;align-items:center;margin:2px 0\">';",
+                    f"        html += '<span style=\"color:{_lbl_c};display:flex;align-items:center;font-size:9px\">' + dot + asset + '</span>';",
+                    f"        html += '<span style=\"color:' + tc + ';font-weight:600;margin-left:12px;font-size:10px\">' + wFmt + '</span>';",
+                    "        html += '</div>';",
+                    "    });",
+                    "    allocItems.innerHTML = html;",
+                    "    const netSign = netExp >= 0 ? '+' : '';",
+                    f"    allocTotals.innerHTML = '<div style=\"font-weight:600\">Net: ' + netSign + netExp.toFixed(1) + '%</div><div>Gross: ' + grossExp.toFixed(1) + '%</div>';",
+                    "    allocTooltip.style.display = 'block';",
+                    "});",
+                ]
+                slider_js += "\n    // Allocation tooltip\n    " + "\n    ".join(_at_js_lines)
+                break  # Only one alloc tooltip supported per dashboard
 
         # ── Background ───────────────────────────────────────────────────
         custom_bg_css = self._theme.get("background_css", "")
