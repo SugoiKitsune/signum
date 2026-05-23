@@ -154,6 +154,7 @@ class Chart:
         self._smoothing_configs: List[Dict[str, Any]] = []
         self._stats_legend: Optional[Dict[str, Any]] = None
         self._bg_image_config: Optional[Dict] = None
+        self._alloc_tooltip: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -576,14 +577,18 @@ class Chart:
         df: pd.DataFrame,
         allocation_cols: Optional[List[str]] = None,
         colors: Optional[List[str]] = None,
-        opacity: float = 0.7,
+        opacity: float = 0.6,
+        style: str = "area",
+        tooltip: bool = True,
+        stacked: bool = True,
         **options,
     ) -> "Chart":
-        """Add multiple allocation series (non-stacking) for portfolio visualization.
+        """Add multiple allocation series for portfolio visualization.
         
-        Renders each allocation as a separate line series to avoid the stacking
-        behavior of area charts. Ideal for showing exclusive allocations where
-        weights sum to 100% but only one asset is active at a time.
+        Shows allocation percentages across multiple assets. In stacked mode,
+        long positions stack upward from 0 and short positions stack downward
+        from 0, creating a visual "pie" showing total exposure at each level.
+        Lines are subtle to emphasize area changes over boundaries.
         
         Parameters
         ----------
@@ -594,10 +599,17 @@ class Chart:
             If None, uses all numeric columns except 'time'.
         colors : list of str, optional
             Colors for each allocation series. If None, uses theme line colors.
-        opacity : float, default 0.7
-            Line opacity (0-1).
+        opacity : float, default 0.6
+            Fill/bar opacity (0-1).
+        style : str, default "area"
+            Visualization style: "area" (stacked filled), "histogram" (bars), or "line".
+        tooltip : bool, default True
+            Show floating info panel on hover with all allocations at that date.
+        stacked : bool, default True
+            Stack areas cumulatively (longs up from 0, shorts down from 0).
+            Set False for overlapping areas with separate scales.
         **options
-            Additional LightweightCharts LineSeries options.
+            Additional LightweightCharts series options.
         
         Returns
         -------
@@ -606,13 +618,11 @@ class Chart:
         
         Example
         -------
-        >>> df = pd.DataFrame({
-        ...     'Date': dates,
-        ...     'AAPL': [100, 0, 0, 100],
-        ...     'GOOGL': [0, 100, 0, 0],
-        ...     'MSFT': [0, 0, 100, 0],
-        ... })
+        >>> # Stacked areas (default) - longs up from 0, shorts down from 0
         >>> chart = Chart().allocation(df, allocation_cols=['AAPL', 'GOOGL', 'MSFT'])
+        >>> 
+        >>> # Overlapping (non-stacked)
+        >>> chart = Chart().allocation(df, stacked=False)
         """
         df = self._prepare_time(df)
         
@@ -626,19 +636,60 @@ class Chart:
         if not allocation_cols:
             raise ValueError("No allocation columns found. Specify allocation_cols explicitly.")
         
-        # Default colors from theme
+        # Default colors: refined palette with soft, professional colors
         if colors is None:
-            theme_colors = self._theme.get("line_colors", [
-                "#2962FF", "#26a69a", "#ef5350", "#FF6D00", "#9C27B0", "#00ACC1"
-            ])
-            colors = theme_colors * ((len(allocation_cols) // len(theme_colors)) + 1)
+            # Refined palette: muted, sophisticated tones with good contrast
+            allocation_palette = [
+                "#6BA3D0",  # Soft steel blue
+                "#82C785",  # Sage green
+                "#F4A261",  # Warm apricot
+                "#E76F51",  # Terracotta
+                "#9B87C7",  # Soft lavender
+                "#5BC0BE",  # Teal
+                "#F18F9C",  # Dusty rose
+                "#8AB17D",  # Olive green
+            ]
+            colors = allocation_palette * ((len(allocation_cols) // len(allocation_palette)) + 1)
         
-        # Add a line series for each allocation
-        for idx, col in enumerate(allocation_cols):
+        # Determine series type
+        if style.lower() in ("area", "filled"):
+            series_type = "AreaSeries"
+        elif style.lower() in ("histogram", "bar", "bars"):
+            series_type = "HistogramSeries"
+        else:
+            series_type = "LineSeries"
+        
+        # Compute cumulative sums for stacking
+        if stacked and series_type == "AreaSeries":
+            # For long/short portfolios: stack longs upward from 0, shorts downward from 0
+            cumulative_df = df[["time"]].copy()
+            
+            for i in df.index:
+                long_sum = 0.0
+                short_sum = 0.0
+                
+                for col in allocation_cols:
+                    val = df.loc[i, col]
+                    if pd.isna(val):
+                        val = 0.0
+                    
+                    if val >= 0:
+                        long_sum += val
+                        cumulative_df.loc[i, col] = long_sum
+                    else:
+                        short_sum += val
+                        cumulative_df.loc[i, col] = short_sum
+        else:
+            cumulative_df = df.copy()
+        
+        # Add a series for each allocation (reverse order for proper stacking visual)
+        for idx, col in enumerate(reversed(allocation_cols)):
+            rev_idx = len(allocation_cols) - 1 - idx
+            
             if col not in df.columns:
                 raise ValueError(f"Column '{col}' not found in DataFrame")
             
-            tmp = df[["time", col]].rename(columns={col: "value"})
+            tmp = cumulative_df[["time", col]].rename(columns={col: "value"})
             valid = tmp["value"].notna()
             data = sorted(
                 tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
@@ -646,21 +697,117 @@ class Chart:
             )
             
             # Parse color and add opacity
-            base_color = colors[idx % len(colors)]
+            base_color = colors[rev_idx % len(colors)]
             if base_color.startswith('#'):
                 hex_c = base_color.lstrip("#")
                 r, g, b = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
-                line_color = f"rgba({r},{g},{b},{opacity})"
+                color_rgba = f"rgba({r},{g},{b},{opacity})"
+                line_rgba = f"rgba({r},{g},{b},{min(opacity * 1.5, 1)})"
             else:
-                line_color = base_color  # Already rgba or named color
+                color_rgba = base_color
+                line_rgba = base_color
             
-            series_opts = {
-                "color": line_color,
-                "lineWidth": 2,
-                "title": col,
-                **options
+            # Build series options based on type
+            if series_type == "AreaSeries":
+                # For stacked mode: use BaselineSeries to ensure shorts fill toward 0, not chart bottom
+                if stacked:
+                    # Create softer border lines with reduced opacity
+                    soft_line = f"rgba({r},{g},{b},0.5)"  # Semi-transparent borders
+                    # Solid fills to avoid gradient overlap artifacts
+                    solid_fill = f"rgba({r},{g},{b},0.92)"
+                    
+                    series_opts = {
+                        "baseValue": {"type": "price", "price": 0},
+                        "topLineColor": soft_line,
+                        "topFillColor1": solid_fill,
+                        "topFillColor2": solid_fill,
+                        "bottomLineColor": soft_line,
+                        "bottomFillColor1": solid_fill,
+                        "bottomFillColor2": solid_fill,
+                        "lineWidth": 1.5,
+                        "lastValueVisible": False,
+                        "priceLineVisible": False,
+                        "crosshairMarkerVisible": True,
+                        "crosshairMarkerRadius": 4,
+                        "crosshairMarkerBorderColor": base_color,
+                        "crosshairMarkerBackgroundColor": base_color,
+                        "priceScaleId": "right",
+                        **options
+                    }
+                    series_type_override = "BaselineSeries"
+                else:
+                    series_opts = {
+                        "lineColor": line_rgba,
+                        "topColor": color_rgba,
+                        "bottomColor": f"rgba({r},{g},{b},0.05)",
+                        "lineWidth": 2,
+                        "title": col,
+                        "priceScaleId": f"_alloc_{rev_idx}",
+                        **options
+                    }
+                    series_type_override = "AreaSeries"
+                # Only use separate scale if not stacking
+                price_scale = None if stacked else {
+                    "id": f"_alloc_{rev_idx}",
+                    "scaleMargins": {"top": 0, "bottom": 0},
+                }
+            elif series_type == "HistogramSeries":
+                series_opts = {
+                    "color": color_rgba,
+                    "title": col,
+                    "priceScaleId": "right" if stacked else f"_alloc_{rev_idx}",
+                    **options
+                }
+                series_type_override = "HistogramSeries"
+                price_scale = None if stacked else {
+                    "id": f"_alloc_{rev_idx}",
+                    "scaleMargins": {"top": 0, "bottom": 0},
+                }
+            else:  # LineSeries
+                series_opts = {
+                    "color": line_rgba,
+                    "lineWidth": 2,
+                    "title": col,
+                    **options
+                }
+                series_type_override = "LineSeries"
+                price_scale = None
+            
+            # Use the potentially overridden series type (e.g., BaselineSeries for stacked areas)
+            series_dict = {"type": series_type_override, "data": data, "options": series_opts}
+            if price_scale:
+                series_dict["price_scale"] = price_scale
+            self._series.append(series_dict)
+        
+        # Store allocation tooltip metadata (use original non-cumulative data)
+        if tooltip:
+            # Build allocation data lookup using the same date string format as series data
+            # After _prepare_time, dates are in "YYYY-MM-DD" string format
+            alloc_data = {}
+            for _, row in df.iterrows():
+                date_key = str(row["time"])  # Already a string from _prepare_time
+                alloc_data[date_key] = {col: float(row[col]) if pd.notna(row[col]) else 0.0 
+                                        for col in allocation_cols}
+            
+            self._alloc_tooltip = {
+                "assets": allocation_cols,
+                "colors": [colors[i % len(colors)] for i in range(len(allocation_cols))],
+                "data": alloc_data,
             }
-            self._series.append({"type": "LineSeries", "data": data, "options": series_opts})
+        
+        # Configure right price scale with percentage formatting
+        if stacked and series_type == "AreaSeries":
+            self._series.append({
+                "type": "__price_scale_config__",
+                "scale_id": "right",
+                "options": {
+                    "mode": 0,
+                    "visible": True,
+                    "borderVisible": False,
+                    "scaleMargins": {"top": 0.05, "bottom": 0.05},
+                },
+                "formatter": "percent"  # Add percentage formatter
+            })
         
         return self
 
@@ -1174,6 +1321,22 @@ class Chart:
     def _build_series_js(self, var_prefix: str = "", chart_var: str = "chart") -> str:
         lines = []
         for i, s in enumerate(self._series):
+            # Special handling for price scale configuration (not a real series)
+            if s.get("type") == "__price_scale_config__":
+                if s.get("formatter") == "percent":
+                    # Add percentage formatter
+                    lines.append(
+                        f"{chart_var}.applyOptions({{"
+                        f"localization: {{"
+                        f"priceFormatter: (price) => price.toFixed(0) + '%'"
+                        f"}}}});"
+                    )
+                lines.append(
+                    f"{chart_var}.priceScale('{s['scale_id']}').applyOptions("
+                    f"{self._json(s['options'])});"
+                )
+                continue
+            
             var = f"{var_prefix}s{i}"
             lines.append(
                 f"const {var} = {chart_var}.addSeries(LightweightCharts.{s['type']}, "
@@ -1368,6 +1531,94 @@ class Chart:
                 f'font:11px/1.6 \'SF Mono\',\'Consolas\',monospace">'
                 f'{rows}</table></div>'
             )
+
+        # ── Allocation tooltip overlay ────────────────────────────────────
+        alloc_tooltip_html = ""
+        alloc_tooltip_js = ""
+        if self._alloc_tooltip:
+            at = self._alloc_tooltip
+            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+            box_bg = "rgba(10,10,26,0.85)" if is_dark_bg else "rgba(255,255,255,0.90)"
+            lbl_c  = "rgba(255,255,255,0.72)" if is_dark_bg else "rgba(0,0,0,0.65)"
+            val_c  = "rgba(255,255,255,0.95)" if is_dark_bg else "rgba(0,0,0,0.92)"
+            date_c = "rgba(255,255,255,0.85)" if is_dark_bg else "rgba(0,0,0,0.78)"
+            
+            alloc_tooltip_html = (
+                f'<div id="alloc-tooltip" style="position:absolute;top:12px;left:12px;z-index:7;'
+                f'background:{box_bg};'
+                f'backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);'
+                f'border:1px solid rgba(255,255,255,0.12);'
+                f'border-radius:8px;padding:10px 14px;display:none;'
+                f'box-shadow:0 4px 16px rgba(0,0,0,0.3);min-width:200px;">'
+                f'<div id="alloc-date" style="color:{date_c};font:11px/1.4 \'SF Mono\',\'Consolas\',monospace;'
+                f'margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.08);'
+                f'font-weight:600"></div>'
+                f'<div id="alloc-items" style="font:11px/1.8 \'SF Mono\',\'Consolas\',monospace"></div>'
+                f'<div id="alloc-totals" style="color:{lbl_c};font:10px/1.7 \'SF Mono\',\'Consolas\',monospace;'
+                f'margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08)"></div>'
+                f'</div>'
+            )
+            
+            # Prepare allocation data as JSON for JavaScript
+            import json
+            alloc_data_json = json.dumps(at["data"])
+            assets_json = json.dumps(at["assets"])
+            colors_json = json.dumps(at["colors"])
+            
+            # Pre-compute color values to avoid quote escaping issues
+            short_color = "#ef5350" if is_dark_bg else "#c62828"
+            
+            alloc_tooltip_js = "\n".join([
+                "    // Allocation tooltip",
+                f"    const allocData = {alloc_data_json};",
+                f"    const allocAssets = {assets_json};",
+                f"    const allocColors = {colors_json};",
+                "    const allocTooltip = document.getElementById('alloc-tooltip');",
+                "    const allocDate = document.getElementById('alloc-date');",
+                "    const allocItems = document.getElementById('alloc-items');",
+                "    const allocTotals = document.getElementById('alloc-totals');",
+                "    ",
+                "    chart.subscribeCrosshairMove(function(param) {",
+                "        if (!param.time || !param.point) {",
+                "            allocTooltip.style.display = 'none';",
+                "            return;",
+                "        }",
+                "        ",
+                "        const dateKey = String(param.time);",
+                "        const weights = allocData[dateKey];",
+                "        ",
+                "        if (!weights) {",
+                "            allocTooltip.style.display = 'none';",
+                "            return;",
+                "        }",
+                "        ",
+                "        allocDate.textContent = '📅 ' + dateKey;",
+                "        ",
+                "        let html = '';",
+                "        let netExp = 0, grossExp = 0;",
+                "        allocAssets.forEach(function(asset, i) {",
+                "            const w = weights[asset] || 0;",
+                "            netExp += w;",
+                "            grossExp += Math.abs(w);",
+                "            const color = allocColors[i];",
+                "            const colorDot = '<span style=\"display:inline-block;width:10px;height:10px;border-radius:3px;background:' + color + ';margin-right:8px\"></span>';",
+                "            const sign = w >= 0 ? '+' : '';",
+                "            const wFormatted = (sign + w.toFixed(1)) + '%';",
+                f"            const textColor = w < 0 ? '{short_color}' : '{val_c}';",
+                f"            html += '<div style=\"display:flex;justify-content:space-between;align-items:center;margin:3px 0\">';",
+                f"            html += '<span style=\"color:{lbl_c};display:flex;align-items:center\">' + colorDot + asset + '</span>';",
+                f"            html += '<span style=\"color:' + textColor + ';font-weight:700;margin-left:16px;font-size:12px\">' + wFormatted + '</span>';",
+                f"            html += '</div>';",
+                "        });",
+                "        allocItems.innerHTML = html;",
+                "        ",
+                "        const netSign = netExp >= 0 ? '+' : '';",
+                f"        allocTotals.innerHTML = '<div style=\"font-weight:600\">Net: ' + netSign + netExp.toFixed(1) + '%</div>' +",
+                f"                                '<div>Gross: ' + grossExp.toFixed(1) + '% (' + (grossExp/100).toFixed(2) + 'x)</div>';",
+                "        ",
+                "        allocTooltip.style.display = 'block';",
+                "    });",
+            ])
 
         # ── Background image glass overlay ────────────────────────────────
         _bgi = self._bg_image_config
@@ -1570,6 +1821,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 {bg_svg}{_glass_open}<div id="fc"></div>
 {_kmb_overlay}
 {stats_html}
+{alloc_tooltip_html}
 <div id="err"></div>
 {slider_html}
 {smoothing_html}
@@ -1582,6 +1834,7 @@ try {{
     {_yscale_js}
     {slider_js}
     {smoothing_js}
+    {alloc_tooltip_js}
 }} catch(e) {{
     var el = document.getElementById('err');
     el.style.display = 'block';
