@@ -298,11 +298,12 @@ class Chart:
         """Add histogram series."""
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
-        data = (
-            df[["time", vcol]]
-            .rename(columns={vcol: "value"})
-            .dropna(subset=["value"])
-            .to_dict("records")
+        # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
+        tmp = df[["time", vcol]].rename(columns={vcol: "value"})
+        valid = tmp["value"].notna()
+        data = sorted(
+            tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
+            key=lambda r: r["time"],
         )
         series_opts = {**self._theme.get("histogram", {}), **options}
         if color:
@@ -350,11 +351,12 @@ class Chart:
         """Add baseline series (green above / red below a base value)."""
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
-        data = (
-            df[["time", vcol]]
-            .rename(columns={vcol: "value"})
-            .dropna(subset=["value"])
-            .to_dict("records")
+        # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
+        tmp = df[["time", vcol]].rename(columns={vcol: "value"})
+        valid = tmp["value"].notna()
+        data = sorted(
+            tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
+            key=lambda r: r["time"],
         )
         series_opts = {
             "baseValue": {"type": "price", "price": base_value},
@@ -362,6 +364,26 @@ class Chart:
             **options,
         }
         self._series.append({"type": "BaselineSeries", "data": data, "options": series_opts})
+        return self
+
+    def bar(self, df: pd.DataFrame, **options) -> "Chart":
+        """Add OHLC bar series (vertical bars with ticks for open/close).
+        
+        Traditional bar chart representation of OHLC data, where each bar
+        shows the high-low range with left tick for open and right tick for close.
+        
+        DataFrame needs time + open/high/low/close columns.
+        """
+        df = self._prepare_time(df)
+        o, h, l, c = (self._col_ci(df, x) for x in ("open", "high", "low", "close"))
+        data = (
+            df[["time", o, h, l, c]]
+            .rename(columns={o: "open", h: "high", l: "low", c: "close"})
+            .dropna(subset=["open", "high", "low", "close"])
+            .to_dict("records")
+        )
+        series_opts = {**self._theme.get("candlestick", {}), **options}
+        self._series.append({"type": "BarSeries", "data": data, "options": series_opts})
         return self
 
     # ── Annotations ───────────────────────────────────────────────────────
@@ -423,6 +445,48 @@ class Chart:
             },
         })
         return self
+
+    def hline(
+        self,
+        y: float,
+        label: str = "",
+        color: Optional[str] = None,
+        width: int = 1,
+        style: int = 2,
+        series_index: int = 0,
+    ) -> "Chart":
+        """Add a horizontal reference line at y-value.
+        
+        Simplified alias for price_line with more intuitive naming for non-price charts.
+        
+        Parameters
+        ----------
+        y : float
+            Y-axis value where the line should be drawn.
+        label : str, optional
+            Text label for the line.
+        color : str, optional
+            Line color (hex or rgba). Defaults to theme line color.
+        width : int, default 1
+            Line width in pixels.
+        style : int, default 2
+            Line style: 0=solid, 1=dotted, 2=dashed, 3=large dashed, 4=sparse dotted.
+        series_index : int, default 0
+            Index of the series to attach the line to.
+        
+        Returns
+        -------
+        Chart
+            Self for method chaining.
+        """
+        return self.price_line(
+            price=y,
+            title=label,
+            color=color,
+            line_width=width,
+            line_style=style,
+            series_index=series_index,
+        )
 
     def marker(
         self,
@@ -505,6 +569,99 @@ class Chart:
                 "scaleMargins": {"top": 0, "bottom": 0},
             },
         })
+        return self
+
+    def allocation(
+        self,
+        df: pd.DataFrame,
+        allocation_cols: Optional[List[str]] = None,
+        colors: Optional[List[str]] = None,
+        opacity: float = 0.7,
+        **options,
+    ) -> "Chart":
+        """Add multiple allocation series (non-stacking) for portfolio visualization.
+        
+        Renders each allocation as a separate line series to avoid the stacking
+        behavior of area charts. Ideal for showing exclusive allocations where
+        weights sum to 100% but only one asset is active at a time.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with time column and one column per asset allocation.
+        allocation_cols : list of str, optional
+            Column names containing allocation percentages (0-100 or 0-1).
+            If None, uses all numeric columns except 'time'.
+        colors : list of str, optional
+            Colors for each allocation series. If None, uses theme line colors.
+        opacity : float, default 0.7
+            Line opacity (0-1).
+        **options
+            Additional LightweightCharts LineSeries options.
+        
+        Returns
+        -------
+        Chart
+            Self for method chaining.
+        
+        Example
+        -------
+        >>> df = pd.DataFrame({
+        ...     'Date': dates,
+        ...     'AAPL': [100, 0, 0, 100],
+        ...     'GOOGL': [0, 100, 0, 0],
+        ...     'MSFT': [0, 0, 100, 0],
+        ... })
+        >>> chart = Chart().allocation(df, allocation_cols=['AAPL', 'GOOGL', 'MSFT'])
+        """
+        df = self._prepare_time(df)
+        
+        # Auto-detect allocation columns if not specified
+        if allocation_cols is None:
+            allocation_cols = [
+                col for col in df.columns 
+                if col != "time" and pd.api.types.is_numeric_dtype(df[col])
+            ]
+        
+        if not allocation_cols:
+            raise ValueError("No allocation columns found. Specify allocation_cols explicitly.")
+        
+        # Default colors from theme
+        if colors is None:
+            theme_colors = self._theme.get("line_colors", [
+                "#2962FF", "#26a69a", "#ef5350", "#FF6D00", "#9C27B0", "#00ACC1"
+            ])
+            colors = theme_colors * ((len(allocation_cols) // len(theme_colors)) + 1)
+        
+        # Add a line series for each allocation
+        for idx, col in enumerate(allocation_cols):
+            if col not in df.columns:
+                raise ValueError(f"Column '{col}' not found in DataFrame")
+            
+            tmp = df[["time", col]].rename(columns={col: "value"})
+            valid = tmp["value"].notna()
+            data = sorted(
+                tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
+                key=lambda r: r["time"],
+            )
+            
+            # Parse color and add opacity
+            base_color = colors[idx % len(colors)]
+            if base_color.startswith('#'):
+                hex_c = base_color.lstrip("#")
+                r, g, b = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+                line_color = f"rgba({r},{g},{b},{opacity})"
+            else:
+                line_color = base_color  # Already rgba or named color
+            
+            series_opts = {
+                "color": line_color,
+                "lineWidth": 2,
+                "title": col,
+                **options
+            }
+            self._series.append({"type": "LineSeries", "data": data, "options": series_opts})
+        
         return self
 
     def forecast(

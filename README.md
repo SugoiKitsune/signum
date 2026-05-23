@@ -18,8 +18,8 @@ chart  # renders inline in Jupyter
 
 ## Features
 
-- **Series** — `candlestick`, `line`, `area`, `baseline`, `histogram`, `volume`
-- **Annotations** — `price_line`, `marker`, `signals`, `shade`, `set_watermark`
+- **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`
+- **Annotations** — `price_line`, `hline`, `marker`, `signals`, `shade`, `set_watermark`
 - **Themes** — `dark` (default), `light`, `ft`, `midnight`
 - **Dashboard** — multi-pane sync (crosshair, zoom, scroll)
 - **Output** — `.show()`, `.save()`, `.to_dash()`, `.to_streamlit()`, `.render()`
@@ -35,6 +35,26 @@ chart = (
     .signals(df, signal_col="signal")
     .shade(df, position_col="position")
     .price_line(220, title="Target", color="#FF9800")
+)
+```
+
+## Portfolio Allocation
+
+Visualize portfolio allocations across multiple assets without stacking:
+
+```python
+# DataFrame with allocation percentages per asset
+allocation_df = pd.DataFrame({
+    'Date': dates,
+    'AAPL': [50, 30, 0, 60],
+    'GOOGL': [30, 40, 100, 20],
+    'MSFT': [20, 30, 0, 20],
+})
+
+chart = (
+    Chart(theme="dark", height=400)
+    .allocation(allocation_df, allocation_cols=['AAPL', 'GOOGL', 'MSFT'])
+    .hline(50, label="50%", style=2)  # Add reference line
 )
 ```
 

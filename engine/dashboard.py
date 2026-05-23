@@ -631,6 +631,17 @@ class Dashboard:
         _show = self._show_execution if self._show_execution is not None else bool(self._threshold_config)
         _exec_hdr = self._execution_badge_text(self._execution) if _show else ""
 
+        # ── Auto-align all panes to a shared time union ────────────────────────
+        # Insert {time:t} whitespace slots for any date a series is missing so
+        # every pane has an identical bar count → LWC logical-index sync is exact.
+        _all_series = [s for p in self._panes for s in p._series]
+        _all_times  = {r["time"] for s in _all_series for r in s["data"]}
+        for s in _all_series:
+            missing = _all_times - {r["time"] for r in s["data"]}
+            if missing:
+                s["data"] = sorted(s["data"] + [{"time": t} for t in missing], key=lambda r: r["time"])
+        # ─────────────────────────────────────────────────────────────────────────
+
         for i, pane in enumerate(self._panes):
             div_id, chart_var, prefix = f"pane{i}", f"chart{i}", f"p{i}_"
             is_last = (i == n_panes - 1)
