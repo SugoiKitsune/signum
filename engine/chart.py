@@ -673,12 +673,14 @@ class Chart:
                     if pd.isna(val):
                         val = 0.0
                     
-                    if val >= 0:
+                    if val > 0:
                         long_sum += val
                         cumulative_df.loc[i, col] = long_sum
-                    else:
+                    elif val < 0:
                         short_sum += val
                         cumulative_df.loc[i, col] = short_sum
+                    else:
+                        cumulative_df.loc[i, col] = 0.0
         else:
             cumulative_df = df.copy()
         
@@ -711,10 +713,11 @@ class Chart:
             if series_type == "AreaSeries":
                 # For stacked mode: use BaselineSeries to ensure shorts fill toward 0, not chart bottom
                 if stacked:
-                    # Create softer border lines with reduced opacity
-                    soft_line = f"rgba({r},{g},{b},0.5)"  # Semi-transparent borders
-                    # Solid fills to avoid gradient overlap artifacts
-                    solid_fill = f"rgba({r},{g},{b},0.92)"
+                    # Fully opaque fills so adjacent bands don't bleed through each other,
+                    # especially during sign-flip transitions where a series' line wedges
+                    # through 0 and crosses over neighboring bands.
+                    soft_line = f"rgba({r},{g},{b},0.85)"
+                    solid_fill = f"rgba({r},{g},{b},1.0)"
                     
                     series_opts = {
                         "baseValue": {"type": "price", "price": 0},

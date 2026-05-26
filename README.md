@@ -1,7 +1,17 @@
-<h1><img src="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/logo_signum.svg" width="32" height="32" alt="Signum" style="vertical-align: middle;"> Signum</h1>
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/logo_signum_white.svg">
+    <img src="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/logo_signum_black.svg" width="32" height="32" alt="Signum" style="vertical-align: middle;">
+  </picture>
+  Signum
+</h1>
 
 Financial charting for Python — **Jupyter**, **Dash**, **Streamlit**, standalone HTML.  
 Inspired by Lightweight Charts.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/hero.png" alt="Signum — interactive backtest dashboard with live threshold slider, signal, and equity" width="900">
+</p>
 
 ---
 
