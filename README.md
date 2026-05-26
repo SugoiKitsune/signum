@@ -9,6 +9,10 @@
 Financial charting for Python — **Jupyter**, **Dash**, **Streamlit**, standalone HTML.  
 Inspired by Lightweight Charts.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/SugoiKitsune/signum/main/assets/hero.png" alt="Signum — interactive backtest dashboard with live threshold slider, signal, and equity" width="900">
+</p>
+
 ---
 
 ## Quick Start
