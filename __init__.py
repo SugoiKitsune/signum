@@ -31,4 +31,4 @@ def set_execution(mode):
 
 
 __all__ = ["Chart", "Dashboard", "StatChart", "SferaData", "sfera", "set_execution"]
-__version__ = "0.36.0"
+__version__ = "0.37.0"
