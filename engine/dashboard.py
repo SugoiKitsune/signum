@@ -105,15 +105,30 @@ _JS_SYNC = """
     for (let i = 0; i < charts.length; i++) {
         charts[i].subscribeCrosshairMove(param => {
             if (_csSync) return; _csSync = true;
-            if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
-                for (let j = 0; j < charts.length; j++) { if (j !== i) charts[j].clearCrosshairPosition(); }
-            } else {
-                for (let j = 0; j < charts.length; j++) {
-                    if (j !== i && firstSeries[j]) charts[j].setCrosshairPosition(firstSeries[j].coordinateToPrice(param.point.y) ?? 0, param.time, firstSeries[j]);
-                }
+            const _active = !!(param.time && param.point && param.point.x >= 0 && param.point.y >= 0);
+            // Sync only the VERTICAL line (time) to the other panes.
+            for (let j = 0; j < charts.length; j++) {
+                if (j === i) continue;
+                if (_active && firstSeries[j]) charts[j].setCrosshairPosition(firstSeries[j].coordinateToPrice(param.point.y) ?? 0, param.time, firstSeries[j]);
+                else charts[j].clearCrosshairPosition();
             }
             _csSync = false;
         });
+    }
+    // Horizontal crosshair line only on the pane the mouse is physically over.
+    // (setCrosshairPosition fires synced panes' crosshair-move events asynchronously,
+    //  so DOM hover — not the crosshair event — is the reliable "active pane" signal.)
+    function _setHorz(active) {
+        for (let j = 0; j < charts.length; j++) {
+            const _on = j === active;
+            charts[j].applyOptions({ crosshair: { horzLine: { visible: _on, color: _on ? '__CH_COLOR__' : 'rgba(0,0,0,0)' } } });
+        }
+    }
+    for (let i = 0; i < charts.length; i++) {
+        const _el = document.getElementById('pane' + i);
+        if (!_el) continue;
+        _el.addEventListener('mouseenter', () => _setHorz(i));
+        _el.addEventListener('mouseleave', () => _setHorz(-1));
     }
     function _resizeChartToPane(ci) {
         const el = document.getElementById('pane' + ci);
@@ -343,10 +358,12 @@ class Dashboard:
         _MAP = {"NO": "EXEC NO (NEXT OPEN)", 0: "EXEC 0 (SAME BAR)", 1: "EXEC 1 (NEXT CLOSE)"}
         return _MAP.get(execution, f"EXEC {execution}")
 
-    def __init__(self, panes=None, theme=None, titles=None, gap=2, logo=True, execution=1, show_execution=None):
+    def __init__(self, panes=None, theme=None, titles=None, gap=2, logo=True, execution=1, show_execution=None, crosshair="free"):
         self._panes: List[Chart] = panes or []
         self._titles: List[str] = titles or []
         self._logo = logo
+        # "free" = crosshair follows the mouse anywhere; "magnet" = snaps to data points
+        self._crosshair_magnet = str(crosshair).lower() in ("magnet", "snap", "stitch", "stitched")
         self._show_execution = show_execution  # None = auto (show only if threshold_control used)
         self._theme_explicit = theme is not None
         if theme:
@@ -627,6 +644,7 @@ class Dashboard:
         pane_divs, pane_scripts = [], []
         kmb_chart_vars = []
         _pane_smoothing_configs = []
+        _value_line_panes = []  # (chart_var, [ {var,name,color} ]) for crosshair-following value labels
         n_panes = len(self._panes)
         _show = self._show_execution if self._show_execution is not None else bool(self._threshold_config)
         _exec_hdr = self._execution_badge_text(self._execution) if _show else ""
@@ -690,12 +708,42 @@ class Dashboard:
             ts = chart_opts.get("timeScale", {})
             ts["visible"] = is_last
             chart_opts["timeScale"] = ts
+            # Crosshair mode: free (follow mouse) vs magnet (snap to data points).
+            # New dicts so we never mutate the shared theme crosshair.
+            _ch = dict(chart_opts.get("crosshair", {}))
+            _ch["mode"] = 1 if self._crosshair_magnet else 0
+            # Horizontal line hidden by default; the sync handler turns it on only
+            # for the pane under the cursor (vertical stays synced across all panes).
+            _hz = dict(_ch.get("horzLine", {}))
+            _hz["visible"] = False
+            _ch["horzLine"] = _hz
+            chart_opts["crosshair"] = _ch
             opts = json.dumps(chart_opts, separators=(",", ":"))
             fmt_js = pane._get_formatter_js()
             if fmt_js:
                 opts = pane._inject_formatter_into_opts(opts, fmt_js)
             series_js = pane._build_series_js(var_prefix=prefix, chart_var=chart_var)
             first_var = f"{prefix}s0" if pane._series else "null"
+
+            # Crosshair-following value labels (line=/tag= series)
+            _vl_defs = []
+            for _si, _s in enumerate(pane._series):
+                _vl = _s.get("_value_line")
+                if not _vl:
+                    continue
+                _o = _s.get("options", {})
+                _t = _s.get("type")
+                # Match the series' actual rendered line color
+                if _t == "AreaSeries":
+                    _clr = _o.get("lineColor") or _o.get("topColor") or _o.get("color")
+                elif _t == "BaselineSeries":
+                    _clr = _o.get("topLineColor") or _o.get("color")
+                else:  # LineSeries, HistogramSeries
+                    _clr = _o.get("color") or _o.get("lineColor")
+                _vl_defs.append({"var": f"{prefix}s{_si}", "color": _clr or "#888",
+                                 "line": bool(_vl.get("line")), "tag": bool(_vl.get("tag"))})
+            if _vl_defs:
+                _value_line_panes.append((chart_var, _vl_defs))
             pane_scripts.append(
                 f"const {chart_var} = LightweightCharts.createChart(document.getElementById('{div_id}'), {opts});\n"
                 f"    charts.push({chart_var});\n    {series_js}\n    firstSeries.push({first_var});")
@@ -849,6 +897,30 @@ class Dashboard:
                 slider_js += "\n    // Allocation tooltip\n    " + "\n    ".join(_at_js_lines)
                 break  # Only one alloc tooltip supported per dashboard
 
+        # ── Crosshair-following value labels (value_line=True) ───────────────
+        if _value_line_panes:
+            _vl_lines = []
+            for _cv, _defs in _value_line_panes:
+                _arr = ",".join(
+                    "{s:%s,c:%s,ln:%s,tg:%s}" % (
+                        d["var"], json.dumps(d["color"]),
+                        "true" if d["line"] else "false", "true" if d["tag"] else "false")
+                    for d in _defs)
+                _vl_lines.append(
+                    "(function(){\n"
+                    f"    var defs=[{_arr}];\n"
+                    "    var pl=defs.map(function(d){ return d.s.createPriceLine({price:0,color:d.c,lineWidth:1,lineStyle:2,axisLabelVisible:false,lineVisible:false}); });\n"
+                    f"    {_cv}.subscribeCrosshairMove(function(param){{\n"
+                    "        for(var i=0;i<defs.length;i++){\n"
+                    "            var d=param.time?param.seriesData.get(defs[i].s):null;\n"
+                    "            if(d&&d.value!=null){ pl[i].applyOptions({price:d.value,axisLabelVisible:defs[i].tg,lineVisible:defs[i].ln}); }\n"
+                    "            else { pl[i].applyOptions({axisLabelVisible:false,lineVisible:false}); }\n"
+                    "        }\n"
+                    "    });\n"
+                    "})();"
+                )
+            slider_js += "\n    // Crosshair value labels\n    " + "\n    ".join(_vl_lines)
+
         # ── Background ───────────────────────────────────────────────────
         custom_bg_css = self._theme.get("background_css", "")
         bg_css = custom_bg_css if custom_bg_css else f"background:{bg};"
@@ -872,6 +944,11 @@ class Dashboard:
         _logo = (f'<img id="signum-logo" src="data:image/svg+xml;base64,{_LOGO_B64}" '
                  f'width="30" height="30" alt="Signum">') if self._logo else ''
 
+        # Active-pane horizontal crosshair color (restored on the hovered pane).
+        _ch_color = (self._theme.get("chart", {}).get("crosshair", {})
+                     .get("horzLine", {}).get("color", "rgba(255,255,255,0.3)"))
+        _sync_js = _JS_SYNC.replace("__CH_COLOR__", _ch_color)
+
         return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script>{lc_js}</script>
@@ -882,7 +959,7 @@ class Dashboard:
     const charts = [];
     const firstSeries = [];
     {scripts_body}
-    {_JS_SYNC}
+    {_sync_js}
     {slider_js}
 </script></body></html>"""
 

@@ -243,9 +243,18 @@ class Chart:
         color: Optional[str] = None,
         value_col: Optional[str] = None,
         width: int = 2,
+        line: bool = False,
+        tag: bool = False,
         **options,
     ) -> "Chart":
-        """Add line series. Automatically detects value/close column."""
+        """Add line series. Automatically detects value/close column.
+
+        line : bool, default False
+            Show a dashed horizontal line that follows the crosshair at the
+            series value on the hovered day (Dashboard only).
+        tag : bool, default False
+            Show that day's value as a label on the right axis (Dashboard only).
+        """
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
         # LightweightCharts whitespace pattern: NaN rows become {time: ...} only
@@ -257,22 +266,34 @@ class Chart:
             tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
             key=lambda r: r["time"],
         )
-        series_opts = {**options}
+        series_opts = {"priceLineVisible": False, "lastValueVisible": False, **options}
         series_opts["color"] = color or self._next_line_color()
         series_opts["lineWidth"] = width
         if name:
             series_opts["title"] = name
         self._series.append({"type": "LineSeries", "data": data, "options": series_opts})
+        if line or tag:
+            self._series[-1]["_value_line"] = {"line": line, "tag": tag}
         return self
 
     def area(
         self,
         df: pd.DataFrame,
         name: Optional[str] = None,
+        color: Optional[str] = None,
         value_col: Optional[str] = None,
+        line: bool = False,
+        tag: bool = False,
         **options,
     ) -> "Chart":
-        """Add area series (filled line chart)."""
+        """Add area series (filled line chart).
+
+        line : bool, default False
+            Dashed horizontal line following the crosshair at the hovered
+            day's value (Dashboard only).
+        tag : bool, default False
+            That day's value as a right-axis label (Dashboard only).
+        """
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
         # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
@@ -282,10 +303,23 @@ class Chart:
             tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
             key=lambda r: r["time"],
         )
-        series_opts = {**self._theme.get("area", {}), **options}
+        series_opts = {
+            **self._theme.get("area", {}),
+            "priceLineVisible": False,
+            "lastValueVisible": False,
+            **options,
+        }
+        if color:
+            series_opts["lineColor"] = color
+            if color.startswith("#") and len(color) >= 7:
+                r, g, b = (int(color[i:i+2], 16) for i in (1, 3, 5))
+                series_opts["topColor"] = f"rgba({r},{g},{b},0.4)"
+                series_opts["bottomColor"] = f"rgba({r},{g},{b},0.04)"
         if name:
             series_opts["title"] = name
         self._series.append({"type": "AreaSeries", "data": data, "options": series_opts})
+        if line or tag:
+            self._series[-1]["_value_line"] = {"line": line, "tag": tag}
         return self
 
     def histogram(
@@ -294,9 +328,18 @@ class Chart:
         name: Optional[str] = None,
         value_col: Optional[str] = None,
         color: Optional[str] = None,
+        line: bool = False,
+        tag: bool = False,
         **options,
     ) -> "Chart":
-        """Add histogram series."""
+        """Add histogram series.
+
+        line : bool, default False
+            Dashed horizontal line following the crosshair at the hovered
+            day's value (Dashboard only).
+        tag : bool, default False
+            That day's value as a right-axis label (Dashboard only).
+        """
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
         # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
@@ -306,12 +349,19 @@ class Chart:
             tmp[valid].to_dict("records") + [{"time": t} for t in tmp.loc[~valid, "time"]],
             key=lambda r: r["time"],
         )
-        series_opts = {**self._theme.get("histogram", {}), **options}
+        series_opts = {
+            **self._theme.get("histogram", {}),
+            "priceLineVisible": False,
+            "lastValueVisible": False,
+            **options,
+        }
         if color:
             series_opts["color"] = color
         if name:
             series_opts["title"] = name
         self._series.append({"type": "HistogramSeries", "data": data, "options": series_opts})
+        if line or tag:
+            self._series[-1]["_value_line"] = {"line": line, "tag": tag}
         return self
 
     def volume(self, df: pd.DataFrame, **options) -> "Chart":
@@ -347,9 +397,18 @@ class Chart:
         df: pd.DataFrame,
         base_value: float = 0,
         value_col: Optional[str] = None,
+        line: bool = False,
+        tag: bool = False,
         **options,
     ) -> "Chart":
-        """Add baseline series (green above / red below a base value)."""
+        """Add baseline series (green above / red below a base value).
+
+        line : bool, default False
+            Dashed horizontal line following the crosshair at the hovered
+            day's value (Dashboard only).
+        tag : bool, default False
+            That day's value as a right-axis label (Dashboard only).
+        """
         df = self._prepare_time(df)
         vcol = self._find_value_col(df, value_col)
         # LightweightCharts whitespace pattern: NaN rows become {time: ...} only.
@@ -362,9 +421,13 @@ class Chart:
         series_opts = {
             "baseValue": {"type": "price", "price": base_value},
             **self._theme.get("baseline", {}),
+            "priceLineVisible": False,
+            "lastValueVisible": False,
             **options,
         }
         self._series.append({"type": "BaselineSeries", "data": data, "options": series_opts})
+        if line or tag:
+            self._series[-1]["_value_line"] = {"line": line, "tag": tag}
         return self
 
     def bar(self, df: pd.DataFrame, **options) -> "Chart":
