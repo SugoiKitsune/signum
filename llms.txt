@@ -155,4 +155,4 @@ from the first pane.
         .price_line(df["Close"].iloc[-1], title="last")
         .save("aapl.html"))
 
-See `examples/ofz_curve_demo.py` for a dated StatChart curve + linked spread.
+See the "Yield Curve" section of `demo.ipynb` for a dated StatChart curve + linked spread.

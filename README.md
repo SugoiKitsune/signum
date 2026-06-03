@@ -113,5 +113,5 @@ StatChart(theme="light", height=420, title="Sovereign curve").curve(
 Pass per-date `frames={date: {"mean": ..., "lower": ..., "upper": ..., "prior": ...,
 "points": (x, y)}}` to get a **date slider** that morphs the curve, pin a `base=` date
 as a dashed ghost, and chain `.spread(grid, frames=..., base=...)` for a linked
-`active − base` difference panel below — all driven by the one slider. See
-[`examples/ofz_curve_demo.py`](examples/ofz_curve_demo.py).
+`active − base` difference panel below — all driven by the one slider. See the
+**Yield Curve** section of [`demo.ipynb`](demo.ipynb).
