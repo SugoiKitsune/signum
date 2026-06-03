@@ -30,7 +30,8 @@ chart  # renders inline in Jupyter
 
 - **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`
 - **Annotations** — `price_line`, `hline`, `marker`, `signals`, `shade`, `set_watermark`
-- **Themes** — `dark` (default), `light`, `ft`, `midnight`
+- **StatChart** — `distribution` (histogram + KDE), `scatter`, `curve` (fitted line + confidence band + date slider), `spread`
+- **Themes** — `dark` (default), `light`, `ft`, `midnight`, `rome`, `distfit`
 - **Dashboard** — multi-pane sync (crosshair, zoom, scroll)
 - **Output** — `.show()`, `.save()`, `.to_dash()`, `.to_streamlit()`, `.render()`
 
@@ -82,3 +83,26 @@ dash = Dashboard(
     titles=["Price", "Signal", "Equity"],
 )
 ```
+
+## Statistical Charts
+
+`StatChart` renders distributions, scatter, and fitted **curves** on the same Canvas
+pipeline (Jupyter / Dash / Streamlit / HTML).
+
+```python
+from signum import StatChart
+
+# Term-structure / yield curve: dots + smoothed line + 95% band + a 2nd curve
+StatChart(theme="light", height=420, title="Sovereign curve").curve(
+    ttm_grid,                       # x grid (e.g. time to maturity)
+    mean=gp_mean, lower=lo, upper=hi,   # fitted line + confidence band
+    points=(bond_ttm, bond_yield),  # observed dots
+    prior=nss_curve,                # optional second curve (dashed)
+).show()
+```
+
+Pass per-date `frames={date: {"mean": ..., "lower": ..., "upper": ..., "prior": ...,
+"points": (x, y)}}` to get a **date slider** that morphs the curve, pin a `base=` date
+as a dashed ghost, and chain `.spread(grid, frames=..., base=...)` for a linked
+`active − base` difference panel below — all driven by the one slider. See
+[`examples/ofz_curve_demo.py`](examples/ofz_curve_demo.py).
