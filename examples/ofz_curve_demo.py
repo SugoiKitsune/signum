@@ -18,9 +18,11 @@ prior, points} frames to StatChart.curve(...).
 import numpy as np
 import pandas as pd
 
+# Run against a source checkout without installing: add repo's src/ to the path.
+# (After `pip install signum-charts` this block is unnecessary — `import signum` just works.)
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from signum import StatChart
 

@@ -15,6 +15,15 @@ Inspired by Lightweight Charts.
 
 ---
 
+## Install
+
+```bash
+pip install signum-charts          # core (pandas + numpy)
+pip install "signum-charts[all]"   # + yfinance, dash, streamlit
+```
+
+> The distribution is **`signum-charts`** on PyPI; you still `import signum` in code.
+
 ## Quick Start
 
 ```python

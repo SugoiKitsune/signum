@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import pandas as pd
 
-from .themes import THEMES
+from .themes import THEMES, resolve_theme
 from .logos import LOGO_APEX as _LOGO_B64  # swap to LOGO_DIAMOND to restore the classic logo
 
 # ── Local JS bundle ───────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ class Chart:
         y_format: Optional[str] = None,
     ):
         self._theme_name = theme.lower()
-        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
+        self._theme = resolve_theme(theme)
         self._width = width
         self._height = height
         self._watermark = watermark

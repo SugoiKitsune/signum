@@ -24,7 +24,7 @@ from typing import Optional, List
 import numpy as np
 import pandas as pd
 
-from .themes import THEMES
+from .themes import THEMES, resolve_theme
 from .chart import _LOGO_B64
 
 
@@ -41,7 +41,7 @@ class StatChart:
         logo: bool = True,
     ):
         self._theme_name = theme.lower()
-        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
+        self._theme = resolve_theme(theme)
         self._width = width
         self._height = height
         self._cols = cols

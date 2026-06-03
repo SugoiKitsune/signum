@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 
 from .chart import Chart, _get_lc_js, _LOGO_B64
-from .themes import THEMES
+from .themes import THEMES, resolve_theme
 
 # ── Signal mode lookup table ──────────────────────────────────────────────────
 # Each entry: (long_idx, short_idx, long_pos, short_pos, eq_pos,
@@ -372,7 +372,7 @@ class Dashboard:
             self._theme_name = self._panes[0]._theme_name
         else:
             self._theme_name = "dark"
-        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
+        self._theme = resolve_theme(self._theme_name)
         self._gap = gap
         if self._theme_explicit:
             for pane in self._panes:
@@ -395,7 +395,7 @@ class Dashboard:
     @theme.setter
     def theme(self, value):
         self._theme_name = value.lower()
-        self._theme = THEMES.get(self._theme_name, THEMES["dark"])
+        self._theme = resolve_theme(self._theme_name)
         self._theme_explicit = True
         for pane in self._panes:
             pane._theme_name = self._theme_name

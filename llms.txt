@@ -1,0 +1,158 @@
+# Signum — LLM / agent reference
+
+> Professional financial charting for Python. Interactive Lightweight-Charts-style
+> visuals that render inline in Jupyter, embed in Dash/Streamlit, or export to
+> standalone HTML — all from one fluent, chainable API.
+>
+> Install: `pip install signum-charts`  ·  Import: `import signum`
+> (distribution name differs from import name, like scikit-learn / sklearn.)
+
+This file is the complete public API. Read it instead of grepping the source.
+Every series/annotation method returns `self`, so calls chain. All charts share
+the same output methods: `.show()`, `.save(path)`, `.render()`, `.to_dash()`,
+`.to_streamlit()`.
+
+## Conventions
+
+- **Time column** is auto-detected from any of: `time, Time, date, Date,
+  datetime, Datetime, timestamp`. You don't pass it explicitly.
+- **Value column** for single-series methods (`line/area/histogram/baseline`)
+  is auto-detected (e.g. `close`, or the first numeric col); override with
+  `value_col=`.
+- **NaN rows** are rendered as gaps (whitespace), keeping the time axis anchored.
+- **Colors** are CSS strings (`"#2962FF"`, `"rgba(41,98,255,0.4)"`); omit to use
+  the theme palette (auto-cycles for multiple series).
+- **Line styles** (ints): `0=solid, 1=dotted, 2=dashed, 3=large-dashed,
+  4=sparse-dotted`.
+
+## Themes
+
+Pass `theme=` to any constructor. Valid names (also `signum.THEME_NAMES`):
+
+    dark      default — neutral dark
+    light     clean white
+    ft        Financial Times salmon/serif
+    midnight  deep navy (TradingView-like)
+    rome      marble + Tyrian purple, serif
+    distfit   academic navy gradient — best for StatChart
+
+A misspelled theme raises `ValueError` listing valid names (via
+`signum.resolve_theme(name)`); it does NOT silently fall back.
+
+## Chart — price & series charts
+
+    Chart(theme="dark", width=None, height=400, watermark=None,
+          logo=True, y_format=None)
+
+`y_format`: `"kmb"` (K/M/B suffixes) or `"percent"`.
+
+### Series (each takes a DataFrame, returns self)
+
+    .candlestick(df, **options)          # needs open/high/low/close cols
+    .bar(df, **options)                  # OHLC bars
+    .volume(df, **options)               # volume histogram
+    .line(df, name=None, color=None, value_col=None, width=2,
+          line=False, tag=False, **options)
+    .area(df, name=None, color=None, value_col=None,
+          line=False, tag=False, **options)
+    .baseline(df, base_value=0, value_col=None,
+              line=False, tag=False, **options)   # green above / red below
+    .histogram(df, name=None, value_col=None, color=None,
+               line=False, tag=False, **options)
+    .allocation(df, allocation_cols=None, colors=None, opacity=0.6,
+                style="area", tooltip=True, stacked=True, **options)
+        # portfolio weights: one column per asset; long stacks up, short down
+
+`line=True` / `tag=True` add a crosshair-following dashed line / right-axis
+value label (Dashboard only).
+
+### Annotations (return self)
+
+    .price_line(price, title="", color=None, line_width=1,
+                line_style=2, series_index=0)
+    .hline(y, label="", color=None, width=1, style=2, series_index=0)
+        # intuitive alias of price_line for non-price charts
+    .marker(time, text="", position="aboveBar", shape="circle",
+            color=None, series_index=0)
+        # position: aboveBar|belowBar|inBar ; shape: circle|square|arrowUp|arrowDown
+    .signals(df, signal_col="signal", buy_text="BUY", sell_text="SELL",
+             buy_color=None, sell_color=None, series_index=0)
+        # signal col: 1=buy, -1=sell, 0/NaN=none → arrow markers
+    .shade(...)                          # shaded region between dates/levels
+    .set_watermark(text)
+    .stats_legend(...)                   # summary stats box
+
+### Interactive controls (self-contained in the HTML, no Python callbacks)
+
+    .threshold_control(df, threshold=0.0, min_val=-0.05, max_val=0.05,
+                       step=0.001, value_col=None, series_index=0,
+                       buy_color=None, sell_color=None)
+        # drag slider → JS recomputes buy/sell markers live
+    .smoothing_control(...)              # live smoothing-window slider
+    .forecast(...)                       # forward projection band
+    .background_image(...)
+
+### Backtest helper (static method)
+
+    Chart.apply_execution(signal, returns, execution=1,
+                          open_returns=None, carry_in=True) -> pd.Series
+        # execution: 0=same bar, 1=next close/MOC (default), N=lag N bars,
+        #            "NO"=next open/MOO (requires open_returns)
+
+## StatChart — statistical panels
+
+    StatChart(theme="dark", width=None, height=350, cols=None,
+              title=None, logo=True)
+
+    .distribution(data, bins=50, name=None, color=None, show_mean=True,
+                  show_median=True, fit=False, fit_color=None,
+                  percentiles=None)
+        # histogram; fit=True overlays Gaussian KDE; percentiles=[75,90,95,99]
+    .scatter(x, y, name=None, color=None, size=3)
+    .curve(x, mean=None, lower=None, upper=None, points=None, prior=None,
+           frames=None, base=None, ...)
+        # fitted line + confidence band + scatter dots (+ optional 2nd curve).
+        # frames={date: {...}} adds a date slider that morphs the curve.
+    .spread(x, frames=None, base=None, static_y=None, band=False, ...)
+        # active−base difference panel; shares curve()'s slider when linked
+
+`curve`/`spread` frame dict keys: `mean`, `lower`, `upper`, `prior`,
+`points=(x, y)`. All framed panels must share the same ordered date list so a
+single slider drives every panel; `base=<date>` pins a dashed ghost reference.
+
+## Dashboard — synced multi-pane
+
+    Dashboard(panes=[...], titles=[...], theme=None, gap=..., crosshair=...,
+              execution=..., show_execution=None)
+
+    .add(pane, title=None)               # add a Chart pane
+    .threshold_control(...)              # one slider drives all panes
+    .background_image(url, blur=0, tint="rgba(6,6,20,0.40)")
+    .theme = "midnight"                  # setter re-themes all panes
+
+Panes share crosshair, zoom, and scroll. If `theme` is omitted it inherits
+from the first pane.
+
+## Output (all chart types)
+
+    .show()                  # display inline in Jupyter
+    .save(path)              # write standalone .html
+    .render() -> str         # raw HTML string
+    .to_dash(id=None, style=None)        # dash component
+    .to_streamlit(height=None)           # embed in Streamlit
+
+## Full example
+
+    import signum, yfinance as yf
+
+    df = yf.download("AAPL", period="1y", auto_adjust=True).reset_index()
+    sma = df[["Date"]].assign(value=df["Close"].rolling(50).mean())
+
+    (signum.Chart(theme="midnight", height=450, y_format="kmb")
+        .candlestick(df)
+        .line(sma, name="SMA 50")
+        .volume(df)
+        .price_line(df["Close"].iloc[-1], title="last")
+        .save("aapl.html"))
+
+See `examples/ofz_curve_demo.py` for a dated StatChart curve + linked spread.

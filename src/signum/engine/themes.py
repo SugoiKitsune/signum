@@ -2,9 +2,34 @@
 
 Six themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire),
 distfit (academic probability — ideal for StatChart).
+
+The canonical name list is :data:`THEME_NAMES`; resolve a name to its palette
+with :func:`resolve_theme`, which raises a helpful error on a typo instead of
+silently falling back.
 """
 
-THEMES = {
+from typing import Dict
+
+
+def resolve_theme(name: str) -> dict:
+    """Return the palette for ``name``, or raise ``ValueError`` listing valid names.
+
+    Case-insensitive. Unlike a plain ``THEMES.get(...)``, a misspelled theme
+    fails loudly so the mistake is visible immediately::
+
+        >>> resolve_theme("darkmode")
+        ValueError: Unknown theme 'darkmode'. Choose one of: dark, light, ft,
+        midnight, rome, distfit.
+    """
+    key = (name or "").lower()
+    if key not in THEMES:
+        raise ValueError(
+            f"Unknown theme {name!r}. Choose one of: {', '.join(THEME_NAMES)}."
+        )
+    return THEMES[key]
+
+
+THEMES: Dict[str, dict] = {
     "dark": {
         "chart": {
             "layout": {
@@ -347,3 +372,7 @@ THEMES = {
         },
     },
 }
+
+#: Canonical, ordered tuple of valid theme names — use for introspection /
+#: building UI pickers: ``Chart(theme=signum.THEME_NAMES[0])``.
+THEME_NAMES = tuple(THEMES.keys())
