@@ -172,7 +172,7 @@ def _js_shade_opts(scale_id, line_color="transparent", top_color="transparent", 
 
 def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_json,
                      eq_pane_idx, bh_series_var, is_dark, init_args, has_short=True, dd_pane_idx=-1,
-                     cmp_stats_json="[]", primary_name=""):
+                     cmp_stats_json="[]", primary_name="", primary_order=0.0):
     """Generate the JS for equity computation, stats overlay, and initial call."""
     stats_bg = 'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'
     lbl_c = 'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'
@@ -199,6 +199,7 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
     const _ddSeries = _ddPaneIdx >= 0 ? firstSeries[_ddPaneIdx] : null;
     const _cmpStats = {cmp_stats_json};
     const _primaryName = {json.dumps(primary_name)};
+    const _primaryOrder = {primary_order};
     let _statsEl=null, _statsTblEl=null, _statsCollapsed=false;
     if (_eqPaneIdx >= 0) {{
         const _epDiv = document.getElementById('pane' + _eqPaneIdx);
@@ -275,7 +276,10 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
         const val = 'color:{val_c};font-weight:600';
         if (_cmpStats && _cmpStats.length) {{
             // Multi-column: live primary execution + one static column per compared execution.
-            const cols = [Object.assign({{name:_primaryName}}, res)].concat(_cmpStats);
+            // Sort by fill timing so columns always read left→right in execution order
+            // (imm < no < nc < lag-N); the live primary stays bolded wherever it lands.
+            const cols = [Object.assign({{name:_primaryName, order:_primaryOrder, primary:true}}, res)]
+                .concat(_cmpStats).sort((a,b) => (a.order||0) - (b.order||0));
             const M = [
                 ['Return',  c => _fmtPct(c.totalRet)],
                 ['CAGR',    c => _fmtPct(c.cagr)],
@@ -286,8 +290,8 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
                 ['Win',     c => _fmtPct(c.wr, false)],
                 ['In Mkt',  c => _fmtPct(c.timeMkt, false)],
             ];
-            const hdr = '<tr><td></td>' + cols.map((c,i) =>
-                `<td style="${{lbl}};text-align:right;padding:0 0 3px 12px;font-size:9px;letter-spacing:0.3px;${{i===0?'font-weight:700':''}}">${{c.name}}</td>`).join('') + '</tr>';
+            const hdr = '<tr><td></td>' + cols.map(c =>
+                `<td style="${{lbl}};text-align:right;padding:0 0 3px 12px;font-size:9px;letter-spacing:0.3px;${{c.primary?'font-weight:700':''}}">${{c.name}}</td>`).join('') + '</tr>';
             const body = M.map(([k,f]) =>
                 `<tr><td style="${{lbl}};padding:1px 8px 1px 0;white-space:nowrap">${{k}}</td>` +
                 cols.map(c => `<td style="${{val}};text-align:right;padding:1px 0 1px 12px">${{f(c)}}</td>`).join('') + '</tr>').join('');
@@ -527,6 +531,7 @@ class Dashboard:
         signal_delay = _signal_delay
         _cmp_cols = []                          # static per-execution stat columns (compare_executions)
         _primary_name = self._exec_label(_exec)  # header label for the live primary column
+        _primary_order = self._exec_order(_exec)  # execution-timing sort key for the primary column
 
         # ── Auto-inject equity line ──────────────────────────────────────
         if prices is not None and equity_pane is not None and equity_pane < len(self._panes):
@@ -565,6 +570,7 @@ class Dashboard:
                         _st = self._exec_stats(_rx_clip)
                         if _st is not None:
                             _st["name"] = _lbl
+                            _st["order"] = self._exec_order(_ex)
                             _cmp_cols.append(_st)
 
         # ── Parse signal DataFrames ──────────────────────────────────────
@@ -603,6 +609,7 @@ class Dashboard:
             "equity_clip_start": equity_clip_start, "carry_in": carry_in,
             "dd_pane": dd_pane if dd_pane is not None else -1,
             "cmp_stats": _cmp_cols, "primary_name": _primary_name,
+            "primary_order": _primary_order,
         }
         return self
 
@@ -624,15 +631,28 @@ class Dashboard:
 
     @staticmethod
     def _exec_label(ex):
-        """Short display name for an execution policy."""
+        """Short display name for an execution policy (abbreviated by fill timing)."""
         u = str(ex).upper()
-        if u in ("NO", "NM"): return "next-open"
-        if ex == 0: return "same-bar"
-        if ex == 1: return "MOC"
+        if u in ("NO", "NM"): return "no"       # next open
+        if ex == 0: return "imm"                # same bar — immediate (lookahead)
+        if ex == 1: return "nc"                 # next close (MOC)
         try:
             return f"lag {int(ex)}"
         except (TypeError, ValueError):
             return str(ex)
+
+    @staticmethod
+    def _exec_order(ex):
+        """Sort key = when the fill happens (earliest first), so stat columns line
+        up left→right in execution order: imm < no < nc < lag-N."""
+        u = str(ex).upper()
+        if ex == 0: return 0.0                  # same bar (immediate)
+        if u in ("NO", "NM"): return 1.0        # next bar open
+        if ex == 1: return 1.5                  # next bar close (MOC)
+        try:
+            return float(int(ex)) + 0.5         # lag-N fills at close[T+N]
+        except (TypeError, ValueError):
+            return 99.0
 
     @staticmethod
     def _exec_stats(r):
@@ -1240,7 +1260,8 @@ class Dashboard:
                 json.dumps(tc.get('bh_data') or [], separators=(',', ':')),
                 eq_pane_idx, bh_var, is_dark, str(thr0), has_short=True, dd_pane_idx=tc.get('dd_pane', -1),
                 cmp_stats_json=json.dumps(tc.get('cmp_stats') or [], separators=(',', ':')),
-                primary_name=tc.get('primary_name', ''))
+                primary_name=tc.get('primary_name', ''),
+                primary_order=tc.get('primary_order', 0.0))
 
         # Slider event
         baseline_update = '        for (const ss of _sigSeries) { ss.applyOptions({baseValue:{type:"price",price:thr}}); }' if mc["update_baseline"] else ""
