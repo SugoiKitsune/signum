@@ -171,7 +171,8 @@ def _js_shade_opts(scale_id, line_color="transparent", top_color="transparent", 
 
 
 def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_json,
-                     eq_pane_idx, bh_series_var, is_dark, init_args, has_short=True):
+                     eq_pane_idx, bh_series_var, is_dark, init_args, has_short=True, dd_pane_idx=-1,
+                     cmp_stats_json="[]", primary_name=""):
     """Generate the JS for equity computation, stats overlay, and initial call."""
     stats_bg = 'rgba(10,10,26,0.62)' if is_dark else 'rgba(255,255,255,0.68)'
     lbl_c = 'rgba(255,255,255,0.55)' if is_dark else 'rgba(0,0,0,0.45)'
@@ -194,13 +195,17 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
     const _eqPaneIdx = {eq_pane_idx};
     const _eqSeries = _eqPaneIdx >= 0 ? firstSeries[_eqPaneIdx] : null;
     const _bhSeries = _eqPaneIdx >= 0 ? (typeof {bh_series_var} !== 'undefined' ? {bh_series_var} : null) : null;
+    const _ddPaneIdx = {dd_pane_idx};
+    const _ddSeries = _ddPaneIdx >= 0 ? firstSeries[_ddPaneIdx] : null;
+    const _cmpStats = {cmp_stats_json};
+    const _primaryName = {json.dumps(primary_name)};
     let _statsEl=null, _statsTblEl=null, _statsCollapsed=false;
     if (_eqPaneIdx >= 0) {{
         const _epDiv = document.getElementById('pane' + _eqPaneIdx);
         _statsEl = document.createElement('div');
         _statsEl.style.cssText = 'position:absolute;top:8px;left:8px;z-index:6;background:{stats_bg};backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);border:1px solid rgba(255,255,255,0.10);border-radius:10px;padding:6px 12px;pointer-events:auto;cursor:pointer;user-select:none;font:11px/1.6 \\'SF Mono\\',\\'Consolas\\',monospace;';
         const _statsHdr = document.createElement('div');
-        _statsHdr.style.cssText = 'color:{hdr_c};font:9px/1.8 \\'SF Mono\\',monospace;text-align:right;letter-spacing:0.5px';
+        _statsHdr.style.cssText = 'color:{hdr_c};font:9px/1.8 \\'SF Mono\\',monospace;text-align:left;letter-spacing:0.5px';
         _statsHdr.textContent = '\\u25be STATS';
         _statsTblEl = document.createElement('table');
         _statsTblEl.style.cssText = 'border-collapse:collapse';
@@ -220,8 +225,8 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
             const sig = _initSig;
             prevPos = {eq_pos_expr};
         }}
-        const eqData=[],bhData=[];
-        let n=0,sumR=0,sumR2=0,peak=100,maxDD=0,wins=0,tradesN=0,nLong=0,{short_vars}_coldCtr=0;
+        const eqData=[],bhData=[],ddData=[];
+        let n=0,sumR=0,sumR2=0,sumNeg2=0,bhSumR=0,bhSumR2=0,peak=100,maxDD=0,wins=0,tradesN=0,nLong=0,{short_vars}_coldCtr=0;
         const hasBh = _bhRets.length === _rets.length;
         const L = _rets.length;
         for (let i = 0; i < L; i++) {{
@@ -238,10 +243,13 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
                 eqData.push({{time: _rets[i].time, value: eq}});
                 if (hasBh) bhData.push({{time: _bhRets[i].time, value: bh}});
                 if (pos !== 0) {{ sumR += r; sumR2 += r*r; n++; if(r>0) wins++; tradesN++; }}
+                if (r < 0) sumNeg2 += r*r;
+                if (hasBh) {{ bhSumR += _bhRets[i].ret; bhSumR2 += _bhRets[i].ret*_bhRets[i].ret; }}
                 if (pos === 1) nLong++;{short_track}
                 if (eq > peak) peak = eq;
                 const dd = (eq - peak) / peak;
                 if (dd < maxDD) maxDD = dd;
+                ddData.push({{time: _rets[i].time, value: dd*100}});
             }}
             prevPos = pos;
         }}
@@ -252,19 +260,55 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
         const nYears = L / 252;
         const cagr = Math.pow(eqData[eqData.length-1].value/100, 1/nYears) - 1;
         const annV = L > 1 ? Math.sqrt((sumR2 - sumR*sumR/L) / (L-1) * 252) : 1;
-        const sharpe = annV > 0 ? cagr / annV : 0;
-        return {{eqData,bhData,totalRet,bhRet,cagr,sharpe,maxDD,wr,timeMkt{short_ret}}};
+        const annMean = (sumR / L) * 252;
+        const sharpe = annV > 0 ? annMean / annV : 0;                        // standard Sharpe = mean/vol (matches DSL)
+        const downV = Math.sqrt(sumNeg2 / L * 252);
+        const sortino = downV > 0 ? annMean / downV : 0;
+        const bhAnnV = L > 1 ? Math.sqrt((bhSumR2 - bhSumR*bhSumR/L) / (L-1) * 252) : 1;
+        const bhSharpe = (hasBh && bhAnnV > 0) ? (bhSumR / L * 252) / bhAnnV : null;
+        return {{eqData,bhData,ddData,totalRet,bhRet,cagr,sharpe,sortino,vol:annV,bhSharpe,maxDD,wr,timeMkt{short_ret}}};
     }}
     function _fmtPct(v,showSign=true) {{ return (showSign && v>0?'+':'') + (v*100).toFixed(1)+'%'; }}
     function _updateStats(res) {{
         if (!_statsEl || !_statsTblEl) return;
         const lbl = 'color:{lbl_c}';
         const val = 'color:{val_c};font-weight:600';
+        if (_cmpStats && _cmpStats.length) {{
+            // Multi-column: live primary execution + one static column per compared execution.
+            const cols = [Object.assign({{name:_primaryName}}, res)].concat(_cmpStats);
+            const M = [
+                ['Return',  c => _fmtPct(c.totalRet)],
+                ['CAGR',    c => _fmtPct(c.cagr)],
+                ['Sharpe',  c => c.sharpe.toFixed(2)],
+                ['Sortino', c => c.sortino.toFixed(2)],
+                ['Vol',     c => _fmtPct(c.vol, false)],
+                ['Max DD',  c => _fmtPct(c.maxDD, false)],
+                ['Win',     c => _fmtPct(c.wr, false)],
+                ['In Mkt',  c => _fmtPct(c.timeMkt, false)],
+            ];
+            const hdr = '<tr><td></td>' + cols.map((c,i) =>
+                `<td style="${{lbl}};text-align:right;padding:0 0 3px 12px;font-size:9px;letter-spacing:0.3px;${{i===0?'font-weight:700':''}}">${{c.name}}</td>`).join('') + '</tr>';
+            const body = M.map(([k,f]) =>
+                `<tr><td style="${{lbl}};padding:1px 8px 1px 0;white-space:nowrap">${{k}}</td>` +
+                cols.map(c => `<td style="${{val}};text-align:right;padding:1px 0 1px 12px">${{f(c)}}</td>`).join('') + '</tr>').join('');
+            let bh = '';
+            if (res.bhRet !== null) {{
+                const bdr = 'border-top:1px solid rgba(127,127,127,0.18)';
+                bh = `<tr><td style="${{lbl}};padding:4px 8px 1px 0;${{bdr}}">B&amp;H</td>` +
+                     `<td colspan="${{cols.length}}" style="${{val}};text-align:right;padding:4px 0 1px 12px;${{bdr}}">` +
+                     `${{_fmtPct(res.bhRet)}} · Sh ${{res.bhSharpe!==null?res.bhSharpe.toFixed(2):'\\u2013'}}</td></tr>`;
+            }}
+            _statsTblEl.innerHTML = hdr + body + bh;
+            return;
+        }}
         const rows = [
             ['Return', _fmtPct(res.totalRet)],
             res.bhRet !== null ? ['B&H', _fmtPct(res.bhRet)] : null,
             ['CAGR',   _fmtPct(res.cagr)],
             ['Sharpe', res.sharpe.toFixed(2)],
+            ['Sortino', res.sortino.toFixed(2)],
+            ['Vol', _fmtPct(res.vol, false)],
+            res.bhSharpe !== null ? ['B&H Sharpe', res.bhSharpe.toFixed(2)] : null,
             ['Max DD', _fmtPct(res.maxDD, false)],
             ['Win Rate', _fmtPct(res.wr, false)],
             ['In Mkt',  _fmtPct(res.timeMkt, false)],
@@ -275,6 +319,7 @@ def _js_equity_block(eq_pos_expr, thr_params, rets_json, oc_json, is_moo, bh_jso
     const _eq0 = _buildEquity({init_args});
     if (_eqSeries) _eqSeries.setData(_eq0.eqData);
     if (_bhSeries && _eq0.bhData.length) _bhSeries.setData(_eq0.bhData);
+    if (_ddSeries) _ddSeries.setData(_eq0.ddData);
     _updateStats(_eq0);"""
 
 
@@ -420,7 +465,8 @@ class Dashboard:
         min_val=-0.05, max_val=0.05, step=0.001,
         value_col=None, value_col2=None, price_pane=0,
         buy_color=None, sell_color=None,
-        daily_returns=None, bh_returns=None, equity_pane=None,
+        daily_returns=None, bh_returns=None, equity_pane=None, dd_pane=None,
+        compare_executions=None,
         invert=False, threshold2=None,
         execution=None, open_returns=None, signal_delay=0,
         prices=None, strategy_color="#4fc3f7", bh_color="#555555",
@@ -479,6 +525,8 @@ class Dashboard:
             _signal_delay = execution + 1
             _exec = execution
         signal_delay = _signal_delay
+        _cmp_cols = []                          # static per-execution stat columns (compare_executions)
+        _primary_name = self._exec_label(_exec)  # header label for the live primary column
 
         # ── Auto-inject equity line ──────────────────────────────────────
         if prices is not None and equity_pane is not None and equity_pane < len(self._panes):
@@ -499,6 +547,25 @@ class Dashboard:
                 _ep = self._panes[equity_pane]
                 _ep.line(_nav_str.to_frame("value"), name="strategy", color=strategy_color)
                 _ep.line(_nav_bh.to_frame("value"), name="B&H", color=bh_color)
+                # Reference curves for other execution policies (static, at the current threshold).
+                if compare_executions:
+                    _exs = (["NO", 1, 0] if str(compare_executions).upper() == "ALL"
+                            else list(compare_executions))
+                    _pal = ["#FFC107", "#AB47BC", "#66BB6A", "#FF7043", "#90A4AE", "#26C6DA"]
+                    for _i, _ex in enumerate(_exs):
+                        _rx = Chart.apply_execution(_gate, _cc, execution=self._normalize_execution(_ex),
+                                                    open_returns=_oc_arg, carry_in=carry_in)
+                        _rx_clip = _rx.loc[equity_clip_start:] if equity_clip_start else _rx
+                        _nx = 100.0 * (1 + _rx_clip).cumprod()   # base 100 — match the JS-driven strategy/B&H lines
+                        if equity_clip_start:
+                            _nx = _nx / _nx.iloc[0] * 100.0
+                        _lbl = self._exec_label(_ex)
+                        _ep.line(_nx.to_frame("value"), name="strategy · " + _lbl,
+                                 color=_pal[_i % len(_pal)], width=1)
+                        _st = self._exec_stats(_rx_clip)
+                        if _st is not None:
+                            _st["name"] = _lbl
+                            _cmp_cols.append(_st)
 
         # ── Parse signal DataFrames ──────────────────────────────────────
         data = self._parse_df(df, value_col)
@@ -534,6 +601,8 @@ class Dashboard:
             "threshold2": threshold2, "signal_delay": signal_delay,
             "execution": _exec, "oc_data": oc_data,
             "equity_clip_start": equity_clip_start, "carry_in": carry_in,
+            "dd_pane": dd_pane if dd_pane is not None else -1,
+            "cmp_stats": _cmp_cols, "primary_name": _primary_name,
         }
         return self
 
@@ -552,6 +621,50 @@ class Dashboard:
             if not _vc:
                 _vc = [c for c in df.columns if c != _stc][0]
         return df[_vc]
+
+    @staticmethod
+    def _exec_label(ex):
+        """Short display name for an execution policy."""
+        u = str(ex).upper()
+        if u in ("NO", "NM"): return "next-open"
+        if ex == 0: return "same-bar"
+        if ex == 1: return "MOC"
+        try:
+            return f"lag {int(ex)}"
+        except (TypeError, ValueError):
+            return str(ex)
+
+    @staticmethod
+    def _exec_stats(r):
+        """Engine-consistent (base-100) summary stats for a strategy return series.
+        Mirrors the JS _buildEquity math exactly so static compare columns line up
+        with the live primary column."""
+        import numpy as _np
+        arr = _np.nan_to_num(_np.asarray(r, dtype=float), nan=0.0)
+        L = len(arr)
+        if L < 2:
+            return None
+        eq = 100.0 * _np.cumprod(1.0 + arr)
+        last = float(eq[-1])
+        total_ret = last / 100.0 - 1.0
+        n_years = L / 252.0
+        cagr = (last / 100.0) ** (1.0 / n_years) - 1.0 if last > 0 else float("nan")
+        sd = float(arr.std(ddof=1)) if L > 1 else 0.0
+        ann_v = sd * _np.sqrt(252.0)
+        ann_mean = float(arr.mean()) * 252.0
+        sharpe = ann_mean / ann_v if ann_v > 0 else 0.0
+        neg = arr[arr < 0]
+        down_v = _np.sqrt((neg ** 2).sum() / L * 252.0)
+        sortino = ann_mean / down_v if down_v > 0 else 0.0
+        peak = _np.maximum.accumulate(eq)
+        max_dd = float(((eq - peak) / peak).min())
+        in_mkt = float((arr != 0).mean())
+        trades = int((arr != 0).sum())
+        wins = int((arr > 0).sum())
+        wr = wins / trades if trades > 0 else 0.0
+        return {"totalRet": float(total_ret), "cagr": float(cagr), "sharpe": float(sharpe),
+                "sortino": float(sortino), "vol": float(ann_v), "maxDD": max_dd,
+                "wr": float(wr), "timeMkt": in_mkt}
 
     @staticmethod
     def _apply_gate(sig_vals, signal_mode, threshold):
@@ -1056,7 +1169,7 @@ class Dashboard:
     {price_chart}.priceScale("_thShadeSell").applyOptions({{visible:false,scaleMargins:{{top:0,bottom:0}}}});"""
 
         # Baseline pane setup
-        baseline_panes = [i for i, p in enumerate(self._panes) if any(s.get('type') == 'BaselineSeries' for s in p._series)]
+        baseline_panes = [i for i, p in enumerate(self._panes) if any(s.get('type') == 'BaselineSeries' for s in p._series) and i != self._threshold_config.get('dd_pane', -1)]
         baseline_setup = ""
         if mc["update_baseline"]:
             baseline_setup = f"""
@@ -1125,7 +1238,9 @@ class Dashboard:
                 json.dumps(tc.get('oc_data') or [], separators=(',', ':')),
                 tc.get('execution') == 'NO',
                 json.dumps(tc.get('bh_data') or [], separators=(',', ':')),
-                eq_pane_idx, bh_var, is_dark, str(thr0), has_short=True)
+                eq_pane_idx, bh_var, is_dark, str(thr0), has_short=True, dd_pane_idx=tc.get('dd_pane', -1),
+                cmp_stats_json=json.dumps(tc.get('cmp_stats') or [], separators=(',', ':')),
+                primary_name=tc.get('primary_name', ''))
 
         # Slider event
         baseline_update = '        for (const ss of _sigSeries) { ss.applyOptions({baseValue:{type:"price",price:thr}}); }' if mc["update_baseline"] else ""
@@ -1149,6 +1264,7 @@ class Dashboard:
             const eq = _buildEquity(thr);
             if (_eqSeries) _eqSeries.setData(eq.eqData);
             if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData);
+            if (typeof _ddSeries !== 'undefined' && _ddSeries) _ddSeries.setData(eq.ddData);
             _updateStats(eq);
             setTimeout(_alignScales, 50);
         }}
@@ -1248,7 +1364,7 @@ class Dashboard:
                 json.dumps(tc.get('oc_data') or [], separators=(',', ':')),
                 tc.get('execution') == 'NO',
                 json.dumps(tc.get('bh_data') or [], separators=(',', ':')),
-                eq_pane_idx, bh_var, is_dark, f"{thr0}, {_thr2}", has_short=False)
+                eq_pane_idx, bh_var, is_dark, f"{thr0}, {_thr2}", has_short=False, dd_pane_idx=tc.get('dd_pane', -1))
 
         event_js = f"""
     const _thP = LightweightCharts.createSeriesMarkers({price_s0}, []);
@@ -1271,7 +1387,7 @@ class Dashboard:
         for (const pl of _thresholdLoLines) pl.applyOptions({{price: lo}});
         for (const pl of _thresholdHiLines) pl.applyOptions({{price: hi}});
         document.getElementById("th-count").textContent = _mkrs(lo, hi).filter(x=>x.shape==="arrowUp").length + " signals";
-        {"if (typeof _rets !== 'undefined' && _rets.length) { const eq = _buildEquity(lo, hi); if (_eqSeries) _eqSeries.setData(eq.eqData); if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData); _updateStats(eq); }" if tc.get('ret_data') else ""}
+        {"if (typeof _rets !== 'undefined' && _rets.length) { const eq = _buildEquity(lo, hi); if (_eqSeries) _eqSeries.setData(eq.eqData); if (_bhSeries && eq.bhData.length) _bhSeries.setData(eq.bhData); if (typeof _ddSeries !== 'undefined' && _ddSeries) _ddSeries.setData(eq.ddData); _updateStats(eq); }" if tc.get('ret_data') else ""}
     }}
     _loSlider.addEventListener('input', function() {{ _thLo = parseFloat(this.value); if (_thLo > _thHi) {{ _thHi = _thLo; _hiSlider.value = _thHi; }} _th_update(_thLo, _thHi); }});
     _hiSlider.addEventListener('input', function() {{ _thHi = parseFloat(this.value); if (_thHi < _thLo) {{ _thLo = _thHi; _loSlider.value = _thLo; }} _th_update(_thLo, _thHi); }});"""

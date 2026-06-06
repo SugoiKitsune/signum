@@ -487,6 +487,64 @@ class Chart:
             })
         return self
 
+    def events(
+        self,
+        events,
+        color: str = "#9aa0b4",
+        opacity: float = 0.07,
+        label_color: Optional[str] = None,
+        series_index: int = 0,
+        label_pos: str = "top",
+    ) -> "Chart":
+        """Highlight named historical periods with a faint full-height band + a small label.
+
+        label_pos : "top" (default) or "bottom" — where the label sits in the chart.
+
+        events : list of dicts, each ``{"start": date, "end": date (optional), "label": str}``.
+                 If ``end`` is omitted the band is a thin marker at ``start``.
+
+        Usage::
+
+            chart.line(px).events([
+                {"start": "2008-09-01", "end": "2009-03-09", "label": "GFC"},
+                {"start": "2020-02-19", "end": "2020-04-01", "label": "COVID"},
+            ])
+        """
+        hexc = color.lstrip("#")
+        r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
+        fill = f"rgba({r},{g},{b},{opacity})"
+        lbl_clr = label_color or f"rgba({r},{g},{b},{min(1.0, opacity*7):.2f})"
+        for ev in events:
+            s_ts = pd.Timestamp(ev["start"]); e_ts = pd.Timestamp(ev.get("end", ev["start"]))
+            start, end = s_ts.strftime("%Y-%m-%d"), e_ts.strftime("%Y-%m-%d")
+            pre = (s_ts - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+            post = (e_ts + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+            label = ev.get("label", "")
+            self._series.append({
+                "type": "AreaSeries",
+                # 0-anchors before/after pin the hidden scale to span 0..1 so the band fills the FULL height
+                "data": [{"time": pre, "value": 0}, {"time": start, "value": 1},
+                         {"time": end, "value": 1}, {"time": post, "value": 0}],
+                "options": {
+                    "priceScaleId": "_events", "lineColor": "rgba(0,0,0,0)",
+                    "topColor": fill, "bottomColor": fill, "lineWidth": 0,
+                    "lastValueVisible": False, "priceLineVisible": False,
+                    "crosshairMarkerVisible": False, "pointMarkersVisible": False,
+                },
+                "price_scale": {"id": "_events", "scaleMargins": {"top": 0, "bottom": 0}},
+            })
+            band_idx = len(self._series) - 1     # the band series itself carries the label (top/bottom of chart)
+            if label:
+                # "top": below value=1 so the text sits *inside* the top edge (not clipped).
+                # "bottom": above value=0 so it sits just over the x-axis.
+                if label_pos == "bottom":
+                    mk = {"time": pre, "position": "aboveBar"}
+                else:
+                    mk = {"time": start, "position": "belowBar"}
+                mk.update({"shape": "circle", "color": lbl_clr, "text": label})
+                self._markers.setdefault(band_idx, []).append(mk)
+        return self
+
     def price_line(
         self,
         price: float,
