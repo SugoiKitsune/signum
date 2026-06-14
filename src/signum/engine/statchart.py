@@ -241,6 +241,17 @@ class StatChart:
             frame_array.append(rec)
         return frame_dates, frame_array
 
+    @staticmethod
+    def _trade_marker(tr) -> Optional[dict]:
+        """Normalize a per-date trade dict {'long':(x,y,label),'short':(x,y,label)} to JSON-safe."""
+        out = {}
+        for side in ("long", "short"):
+            v = tr.get(side)
+            if v is not None and v[0] is not None and v[1] is not None:
+                out[side] = [round(float(v[0]), 6), round(float(v[1]), 6),
+                             str(v[2]) if len(v) > 2 and v[2] is not None else ""]
+        return out or None
+
     def _register_slider(self, frame_dates, base_idx, label, color):
         """Register (or reconcile) the shared date scrubber.
 
@@ -288,6 +299,7 @@ class StatChart:
         frames: Optional[dict] = None,
         base: Optional[str] = None,
         slider_label: str = "date",
+        trades: Optional[dict] = None,
     ) -> "StatChart":
         """Add a fitted-curve panel: scatter points + smooth line + confidence band.
 
@@ -345,6 +357,10 @@ class StatChart:
             if base is not None and base in frame_dates:
                 base_idx = frame_dates.index(base)
             self._register_slider(frame_dates, base_idx, slider_label, curve_color)
+            if trades:
+                for i, d in enumerate(frame_dates):
+                    tr = trades.get(d) or trades.get(str(d))
+                    frame_array[i]["trade"] = self._trade_marker(tr) if tr else None
 
         self._panels.append({
             "type": "curve",
@@ -862,6 +878,22 @@ P.forEach(function(p){{
       /* observed points */
       if(PX&&PY){{ctx.fillStyle=p.point_color;
         for(let i=0;i<PX.length;i++){{if(PY[i]==null)continue;ctx.beginPath();ctx.arc(sx(PX[i]),sy(PY[i]),3.2,0,Math.PI*2);ctx.fill();}}}}
+
+      /* trade markers — LONG (green ^) / SHORT (red v) for the active frame */
+      if(fr&&fr.trade){{
+        const T=fr.trade;
+        function tri(cx,cy,col,up,lbl){{
+          ctx.save();ctx.fillStyle=col;ctx.strokeStyle="#000";ctx.lineWidth=1;ctx.beginPath();const s=8;
+          if(up){{ctx.moveTo(cx,cy-s);ctx.lineTo(cx-s,cy+s);ctx.lineTo(cx+s,cy+s);}}
+          else{{ctx.moveTo(cx,cy+s);ctx.lineTo(cx-s,cy-s);ctx.lineTo(cx+s,cy-s);}}
+          ctx.closePath();ctx.fill();ctx.stroke();
+          if(lbl){{ctx.fillStyle=col;ctx.font="bold 10px "+FONT;ctx.textAlign="center";
+            ctx.textBaseline=up?"top":"bottom";ctx.fillText(lbl,cx,up?cy+s+3:cy-s-3);}}
+          ctx.restore();
+        }}
+        if(T.long)tri(sx(T.long[0]),sy(T.long[1]),"#16a34a",true,T.long[2]);
+        if(T.short)tri(sx(T.short[0]),sy(T.short[1]),"#dc2626",false,T.short[2]);
+      }}
 
       /* axis labels */
       ctx.fillStyle=SC;ctx.font="10px "+FONT;
