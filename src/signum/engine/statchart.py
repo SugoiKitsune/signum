@@ -498,6 +498,11 @@ class StatChart:
         bg_svg = self._theme.get("background_svg", "")
         font = self._font_family()
         logo_invert = "filter:invert(1);" if not dark else ""
+        # trade-marker colours: the theme's natural up/down (buy/sell) hues; mono font so digits
+        # in tickers don't shrink (serif themes like 'ft' use oldstyle figures).
+        long_c = self._theme.get("candlestick", {}).get("upColor", "#16a34a")
+        short_c = self._theme.get("candlestick", {}).get("downColor", "#dc2626")
+        mark_font = "'SF Mono','Consolas','Menlo',monospace"
 
         panels_json = json.dumps(self._panels, separators=(",", ":"))
 
@@ -599,6 +604,7 @@ const REDRAW=[];                    /* per-panel redraw fns, fired on slider mov
 const TC="{text_color}",SC="{sub_color}",GC="{grid_color}",
       AC="{axis_color}",RC="{ref_color}";
 const FONT="{font}";
+const LONG_C="{long_c}",SHORT_C="{short_c}",MARK_FONT="{mark_font}";
 const BAR_STROKE="{bar_stroke}",BAR_SW={bar_stroke_w},FIT_LW={fit_lw};
 const BAR_FILL="{bar_fill_override}";
 const FIT_DEFAULT="{fit_default_color}";
@@ -887,12 +893,12 @@ P.forEach(function(p){{
           if(up){{ctx.moveTo(cx,cy-s);ctx.lineTo(cx-s,cy+s);ctx.lineTo(cx+s,cy+s);}}
           else{{ctx.moveTo(cx,cy+s);ctx.lineTo(cx-s,cy-s);ctx.lineTo(cx+s,cy-s);}}
           ctx.closePath();ctx.fill();ctx.stroke();
-          if(lbl){{ctx.fillStyle=col;ctx.font="bold 10px "+FONT;ctx.textAlign="center";
+          if(lbl){{ctx.fillStyle=col;ctx.font="600 11px "+MARK_FONT;ctx.textAlign="center";
             ctx.textBaseline=up?"top":"bottom";ctx.fillText(lbl,cx,up?cy+s+3:cy-s-3);}}
           ctx.restore();
         }}
-        if(T.long)tri(sx(T.long[0]),sy(T.long[1]),"#16a34a",true,T.long[2]);
-        if(T.short)tri(sx(T.short[0]),sy(T.short[1]),"#dc2626",false,T.short[2]);
+        if(T.long)tri(sx(T.long[0]),sy(T.long[1]),LONG_C,true,T.long[2]);
+        if(T.short)tri(sx(T.short[0]),sy(T.short[1]),SHORT_C,false,T.short[2]);
       }}
 
       /* axis labels */
