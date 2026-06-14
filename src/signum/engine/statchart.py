@@ -889,11 +889,11 @@ P.forEach(function(p){{
       if(fr&&fr.trade){{
         const T=fr.trade;
         function tri(cx,cy,col,up,lbl){{
-          ctx.save();ctx.fillStyle=col;ctx.strokeStyle="#000";ctx.lineWidth=1;ctx.beginPath();const s=8;
+          ctx.save();ctx.fillStyle=col;ctx.strokeStyle="rgba(0,0,0,0.45)";ctx.lineWidth=0.8;ctx.beginPath();const s=5;
           if(up){{ctx.moveTo(cx,cy-s);ctx.lineTo(cx-s,cy+s);ctx.lineTo(cx+s,cy+s);}}
           else{{ctx.moveTo(cx,cy+s);ctx.lineTo(cx-s,cy-s);ctx.lineTo(cx+s,cy-s);}}
           ctx.closePath();ctx.fill();ctx.stroke();
-          if(lbl){{ctx.fillStyle=col;ctx.font="600 11px "+MARK_FONT;ctx.textAlign="center";
+          if(lbl){{ctx.fillStyle=col;ctx.font="600 9px "+MARK_FONT;ctx.textAlign="center";
             ctx.textBaseline=up?"top":"bottom";ctx.fillText(lbl,cx,up?cy+s+3:cy-s-3);}}
           ctx.restore();
         }}
