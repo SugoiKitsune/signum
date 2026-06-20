@@ -165,6 +165,8 @@ class StatChart:
         name: Optional[str] = None,
         color: Optional[str] = None,
         size: int = 3,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None,
     ) -> "StatChart":
         """Add a scatter-plot panel.
 
@@ -178,6 +180,9 @@ class StatChart:
             Dot colour (CSS).
         size : int
             Dot radius in pixels (default 3).
+        x_label, y_label : str, optional
+            Axis titles.  Also used as the hover-tooltip field names in place of
+            the bare ``x`` / ``y`` (e.g. ``x_label="TTM"`` ⇒ ``TTM: 2.31``).
         """
         xarr = np.asarray(x, dtype=float)
         yarr = np.asarray(y, dtype=float)
@@ -191,8 +196,215 @@ class StatChart:
             "x": [round(float(v), 6) for v in xarr],
             "y": [round(float(v), 6) for v in yarr],
             "size": size,
+            "x_label": x_label,
+            "y_label": y_label,
         })
         return self
+
+    # ── Categorical / binned bars ─────────────────────────────────────────
+
+    def bars(
+        self,
+        x=None,
+        by=None,
+        values=None,
+        bins=10,
+        agg: str = "count",
+        mode: str = "group",
+        bin_labels: Optional[List[str]] = None,
+        name: Optional[str] = None,
+        color=None,
+        show_values: bool = True,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None,
+    ) -> "StatChart":
+        """Add a categorical / binned bar panel — an **ordinal** x-axis.
+
+        Unlike :meth:`distribution` (a continuous numeric axis), this lays out
+        equal-width category slots and draws one bar per slot, optionally split
+        into a clustered (``mode="group"``) or ``"stack"``-ed series by a second
+        descriptive dimension.
+
+        Three roles are chosen *explicitly* so a mixed numeric+descriptive frame
+        is never ambiguous about what groups and what becomes the bar height:
+
+        * **bin dimension** — ``x`` (numeric) is bucketed into labelled ranges
+          via ``pd.cut``; those ranges become the x-axis slots.
+        * **split dimension** — ``by`` (categorical, aligned to ``x``) becomes
+          the series, drawn clustered or stacked within each slot.
+        * **height** — a ``count`` of rows per bucket, or ``values`` aggregated
+          per bucket by ``agg`` ("sum" / "mean" / "median").
+
+        Precomputed input is also accepted (no re-binning):
+
+        * a ``dict`` ``{label: value}`` (single series) or
+          ``{label: {series: value}}`` (multi-series),
+        * a ``DataFrame`` (index → slot labels, each column → a series),
+        * a string/category-indexed ``Series`` ``{label: value}``.
+
+        Parameters
+        ----------
+        x : array-like / Series / dict / DataFrame
+            Raw numeric values to bucket, OR a precomputed mapping (see above).
+        by : array-like, optional
+            Categorical split aligned to ``x`` (ignored for precomputed input).
+        values : array-like, optional
+            Numeric quantity to aggregate per bucket.  ``None`` ⇒ row counts.
+        bins : int or sequence, optional
+            Number of equal-width buckets, or explicit edges, passed to ``pd.cut``.
+        agg : {"count", "sum", "mean", "median"}
+            Aggregation of ``values`` within a bucket (forced to "count" when
+            ``values`` is None).
+        mode : {"group", "stack"}
+            Clustered side-by-side bars, or stacked into one bar per slot.
+        bin_labels : list of str, optional
+            Override the auto-generated bucket labels.
+        name : str, optional
+            Panel title.
+        color : str or list, optional
+            Bar colour (single series) or a list of colours (one per series).
+            Auto-cycles the theme palette if omitted.
+        show_values : bool
+            Draw the value above each bar / stack (default True).
+        """
+        labels, series = self._bin_to_series(x, by, values, bins, agg, bin_labels)
+
+        cols = list(color) if isinstance(color, (list, tuple)) else ([color] if color else [])
+        single = len(series) == 1 and series[0]["name"] is None
+        out_series = []
+        for i, s in enumerate(series):
+            c = cols[i] if i < len(cols) else None
+            out_series.append({
+                "name": s["name"],
+                "color": c or self._next_color(),
+                "values": [self._safe_round(v) for v in s["values"]],
+            })
+
+        self._panels.append({
+            "type": "bars",
+            "name": name or f"Bars {len(self._panels) + 1}",
+            "labels": [str(lbl) for lbl in labels],
+            "series": out_series,
+            "mode": "stack" if str(mode).lower() == "stack" else "group",
+            "single": single,
+            "show_values": bool(show_values),
+            "x_label": x_label,
+            "y_label": y_label,
+        })
+        return self
+
+    # ── Bars: input resolution (raw-binned or precomputed) ────────────────
+
+    def _bin_to_series(self, x, by, values, bins, agg, bin_labels):
+        """Resolve raw-or-precomputed input into ``(labels, [{name, values}, ...])``."""
+        # ── precomputed: DataFrame (index → slots, columns → series) ──────
+        if isinstance(x, pd.DataFrame):
+            labels = [str(i) for i in x.index]
+            series = [
+                {"name": str(c), "values": [self._safe_float(v) for v in x[c].values]}
+                for c in x.columns
+            ]
+            return labels, series
+
+        # ── precomputed: dict ────────────────────────────────────────────
+        if isinstance(x, dict):
+            keys = list(x.keys())
+            if keys and isinstance(x[keys[0]], dict):                 # {label: {series: value}}
+                snames: List[str] = []
+                for d in x.values():
+                    for k in (d or {}):
+                        if k not in snames:
+                            snames.append(k)
+                series = [
+                    {"name": str(sn),
+                     "values": [self._safe_float((x[k] or {}).get(sn)) for k in keys]}
+                    for sn in snames
+                ]
+                return [str(k) for k in keys], series
+            return [str(k) for k in keys], [                          # {label: value}
+                {"name": None, "values": [self._safe_float(v) for v in x.values()]}
+            ]
+
+        # ── precomputed: textual-index Series {label: value} ─────────────
+        if isinstance(x, pd.Series) and self._is_label_index(x.index):
+            return [str(i) for i in x.index], [
+                {"name": None, "values": [self._safe_float(v) for v in x.values]}
+            ]
+
+        # ── raw numeric → bin via pd.cut ─────────────────────────────────
+        xs = pd.Series(np.asarray(x, dtype=float))
+        mask = xs.notna()
+        cats = pd.cut(xs[mask], bins=bins, include_lowest=True)
+        cat_index = cats.cat.categories
+        codes = cats.cat.codes.values                                 # bucket index per row (-1 = NaN)
+        nb = len(cat_index)
+        if bin_labels is not None:
+            labels = [str(lbl) for lbl in list(bin_labels)[:nb]]
+        else:
+            labels = [self._interval_label(iv) for iv in cat_index]
+
+        use_count = values is None or str(agg).lower() == "count"
+        vals = None if values is None else np.asarray(values, dtype=float)[mask.values]
+        bys = None if by is None else np.asarray(by, dtype=object)[mask.values]
+
+        def _height(sel):
+            if use_count:
+                return float(np.count_nonzero(sel))
+            picked = vals[sel]
+            picked = picked[~np.isnan(picked)]
+            if picked.size == 0:
+                return None
+            a = str(agg).lower()
+            if a == "sum":
+                return float(np.sum(picked))
+            if a == "median":
+                return float(np.median(picked))
+            return float(np.mean(picked))                             # default "mean"
+
+        if bys is None:
+            return labels, [{"name": None,
+                             "values": [_height(codes == b) for b in range(nb)]}]
+
+        groups = [g for g in pd.unique(bys) if g is not None and g == g]
+        try:
+            groups = sorted(groups)
+        except TypeError:
+            pass
+        series = [
+            {"name": str(g),
+             "values": [_height((bys == g) & (codes == b)) for b in range(nb)]}
+            for g in groups
+        ]
+        return labels, series
+
+    @staticmethod
+    def _safe_float(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if f != f else f
+
+    @staticmethod
+    def _safe_round(v):
+        return None if v is None or v != v else round(float(v), 6)
+
+    @staticmethod
+    def _is_label_index(idx) -> bool:
+        """True when a Series index is textual — treat the Series as precomputed labels."""
+        return (idx.dtype == object
+                or isinstance(idx, pd.CategoricalIndex)
+                or str(idx.dtype).startswith("string"))
+
+    @staticmethod
+    def _interval_label(iv) -> str:
+        """Format a pandas Interval as a compact ``lo–hi`` slot label."""
+        def f(v):
+            v = float(v)
+            if abs(v) >= 1000:
+                return f"{v:,.0f}"
+            return str(int(v)) if v == int(v) else f"{v:g}"
+        return f"{f(iv.left)}–{f(iv.right)}"
 
     # ── Curve helpers ─────────────────────────────────────────────────────
 
@@ -243,13 +455,27 @@ class StatChart:
 
     @staticmethod
     def _trade_marker(tr) -> Optional[dict]:
-        """Normalize a per-date trade dict {'long':(x,y,label),'short':(x,y,label)} to JSON-safe."""
+        """Normalize a per-date trade dict to JSON-safe ``{side: [[x, y, label], ...]}``.
+
+        Each side ('long' / 'short') accepts EITHER a single marker ``(x, y, label)``
+        OR a list of them ``[(x, y, label), ...]`` — both normalize to a list, so any
+        number of long/short positions render on one frame (not just a single pair).
+        """
+        def _one(m):
+            if m is None or m[0] is None or m[1] is None:
+                return None
+            return [round(float(m[0]), 6), round(float(m[1]), 6),
+                    str(m[2]) if len(m) > 2 and m[2] is not None else ""]
+
         out = {}
         for side in ("long", "short"):
             v = tr.get(side)
-            if v is not None and v[0] is not None and v[1] is not None:
-                out[side] = [round(float(v[0]), 6), round(float(v[1]), 6),
-                             str(v[2]) if len(v) > 2 and v[2] is not None else ""]
+            if not v:
+                continue
+            markers = v if isinstance(v[0], (list, tuple)) else [v]   # single (x,y,l) -> [(x,y,l)]
+            ms = [m for m in (_one(x) for x in markers) if m is not None]
+            if ms:
+                out[side] = ms
         return out or None
 
     def _register_slider(self, frame_dates, base_idx, label, color):
@@ -296,6 +522,7 @@ class StatChart:
         base_name: str = "base",
         x_label: Optional[str] = None,
         y_label: Optional[str] = None,
+        resid_label: str = "resid",
         frames: Optional[dict] = None,
         base: Optional[str] = None,
         slider_label: str = "date",
@@ -377,6 +604,7 @@ class StatChart:
             "band_label": band_label,
             "x_label": x_label,
             "y_label": y_label,
+            "resid_label": resid_label,
             # static arrays
             "mean": self._num_list(mean) if mean is not None else None,
             "lower": self._num_list(lower) if lower is not None else None,
@@ -623,6 +851,11 @@ function fmt(v){{
   if(Math.abs(v)>=1)return v.toFixed(2);
   return v.toPrecision(3);
 }}
+function fmtV(v){{   /* value-label: integers bare (counts), else fmt() */
+  if(v==null)return"";
+  if(Math.abs(v-Math.round(v))<1e-9)return String(Math.round(v));
+  return fmt(v);
+}}
 
 /* ── tooltip style ──────────────────────────────────────── */
 const TT_BG="{("rgba(30,30,30,0.92)" if dark else "rgba(255,255,255,0.94)")}";
@@ -813,9 +1046,118 @@ P.forEach(function(p){{
         ctx.beginPath();ctx.arc(sx(X[i]),sy(Y[i]),p.size,0,Math.PI*2);ctx.fill();
       }}
 
+      /* axis labels */
+      ctx.fillStyle=SC;ctx.font="10px "+FONT;
+      if(p.x_label){{ctx.textAlign="center";ctx.textBaseline="bottom";ctx.fillText(p.x_label,_pad.left+_pW/2,_H-3);}}
+      if(p.y_label){{ctx.save();ctx.translate(12,_pad.top+_pH/2);ctx.rotate(-Math.PI/2);ctx.textAlign="center";ctx.textBaseline="top";ctx.fillText(p.y_label,0,0);ctx.restore();}}
+
       /* title */
       ctx.fillStyle=TC;ctx.font="bold 12px "+FONT;
       ctx.textAlign="center";ctx.textBaseline="top";
+      ctx.fillText(p.name,_W/2,6);
+    }}
+
+    /* ── bars (categorical / binned, grouped or stacked) ─── */
+    if(p.type==="bars"){{
+      const L=p.labels,S=p.series,nL=L.length,nS=S.length,stack=p.mode==="stack";
+      /* y-range: stack ⇒ per-slot sums; group ⇒ individual values (allow ±) */
+      let yMax=-Infinity,yMin=0;
+      if(stack){{
+        for(let i=0;i<nL;i++){{let s=0;for(let j=0;j<nS;j++){{const v=S[j].values[i];if(v!=null)s+=v;}}if(s>yMax)yMax=s;}}
+      }}else{{
+        for(let j=0;j<nS;j++)for(let i=0;i<nL;i++){{const v=S[j].values[i];if(v==null)continue;if(v>yMax)yMax=v;if(v<yMin)yMin=v;}}
+      }}
+      if(!isFinite(yMax))yMax=1;
+      if(yMax===yMin)yMax+=1;
+      yMax+=(yMax-yMin)*0.12;                 /* headroom for value labels */
+      _yMin=yMin;_yMax=yMax;_maxC=yMax;
+      _pad={{top:30,right:14,bottom:48,left:50}};
+      _pW=_W-_pad.left-_pad.right;_pH=_H-_pad.top-_pad.bottom;
+      const syB=v=>_pad.top+_pH-(v-_yMin)/(_yMax-_yMin)*_pH;
+      const y0=syB(0);
+      const slotW=_pW/nL,innerPad=slotW*0.12,groupW=slotW-innerPad*2;
+      const barW=stack?groupW:groupW/nS,bgap=stack?0:Math.min(3,barW*0.18);
+      /* store geometry for hover */
+      p._nL=nL;p._nS=nS;p._stack=stack;p._y0=y0;
+      p._slotW=slotW;p._innerPad=innerPad;p._groupW=groupW;p._barW=barW;p._bgap=bgap;
+
+      /* y grid + labels */
+      const yS=niceStep(_yMax-_yMin,5);
+      ctx.strokeStyle=GC;ctx.lineWidth=1;ctx.fillStyle=SC;ctx.font="10px "+FONT;
+      ctx.textAlign="right";ctx.textBaseline="middle";
+      for(let yv=Math.ceil(_yMin/yS)*yS;yv<=_yMax;yv+=yS){{
+        const y=syB(yv);ctx.beginPath();ctx.moveTo(_pad.left,y);ctx.lineTo(_W-_pad.right,y);ctx.stroke();
+        ctx.fillText(fmt(yv),_pad.left-6,y);
+      }}
+      /* axes (x at y=0 baseline) */
+      ctx.strokeStyle=AC;ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(_pad.left,y0);ctx.lineTo(_W-_pad.right,y0);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(_pad.left,_pad.top);ctx.lineTo(_pad.left,_pad.top+_pH);ctx.stroke();
+
+      /* bars */
+      for(let i=0;i<nL;i++){{
+        const sx0=_pad.left+i*slotW+innerPad;
+        if(stack){{
+          let acc=0;
+          for(let j=0;j<nS;j++){{
+            const v=S[j].values[i];if(v==null)continue;
+            const yTop=syB(acc+v),yBot=syB(acc);
+            ctx.fillStyle=S[j].color;ctx.fillRect(sx0,yTop,groupW,yBot-yTop);
+            if(BAR_STROKE){{ctx.strokeStyle=BAR_STROKE;ctx.lineWidth=BAR_SW;ctx.strokeRect(sx0,yTop,groupW,yBot-yTop);}}
+            acc+=v;
+          }}
+          if(p.show_values&&acc!==0){{
+            ctx.fillStyle=TC;ctx.font="600 9px "+FONT;ctx.textAlign="center";ctx.textBaseline="bottom";
+            ctx.fillText(fmtV(acc),sx0+groupW/2,syB(acc)-3);
+          }}
+        }}else{{
+          for(let j=0;j<nS;j++){{
+            const v=S[j].values[i];if(v==null)continue;
+            const bx=sx0+j*barW+bgap/2,bw=barW-bgap;
+            const yv=syB(v),top=Math.min(yv,y0),h=Math.abs(yv-y0);
+            ctx.fillStyle=S[j].color;ctx.fillRect(bx,top,bw,h);
+            if(BAR_STROKE){{ctx.strokeStyle=BAR_STROKE;ctx.lineWidth=BAR_SW;ctx.strokeRect(bx,top,bw,h);}}
+            if(p.show_values){{
+              ctx.fillStyle=TC;ctx.font="600 9px "+FONT;ctx.textAlign="center";
+              ctx.textBaseline=v<0?"top":"bottom";
+              ctx.fillText(fmtV(v),bx+bw/2,v<0?yv+3:yv-3);
+            }}
+          }}
+        }}
+      }}
+
+      /* x labels — rotate when a label would overflow its slot */
+      ctx.fillStyle=SC;ctx.font="10px "+FONT;
+      let maxLW=0;for(let i=0;i<nL;i++)maxLW=Math.max(maxLW,ctx.measureText(L[i]).width);
+      const rot=maxLW>slotW*0.92;
+      for(let i=0;i<nL;i++){{
+        const cx=_pad.left+i*slotW+slotW/2;
+        if(rot){{
+          ctx.save();ctx.translate(cx,_pad.top+_pH+8);ctx.rotate(-Math.PI/5);
+          ctx.textAlign="right";ctx.textBaseline="middle";ctx.fillText(L[i],0,0);ctx.restore();
+        }}else{{
+          ctx.textAlign="center";ctx.textBaseline="top";ctx.fillText(L[i],cx,_pad.top+_pH+7);
+        }}
+      }}
+
+      /* axis labels */
+      ctx.fillStyle=SC;ctx.font="10px "+FONT;
+      if(p.x_label){{ctx.textAlign="center";ctx.textBaseline="bottom";ctx.fillText(p.x_label,_pad.left+_pW/2,_H-3);}}
+      if(p.y_label){{ctx.save();ctx.translate(12,_pad.top+_pH/2);ctx.rotate(-Math.PI/2);ctx.textAlign="center";ctx.textBaseline="top";ctx.fillText(p.y_label,0,0);ctx.restore();}}
+
+      /* legend (multi-series only) */
+      if(!p.single&&nS>1){{
+        ctx.save();ctx.font="10px "+FONT;ctx.textBaseline="middle";ctx.textAlign="left";
+        let lx=_pad.left+8;const ly=_pad.top+12;
+        for(let j=0;j<nS;j++){{
+          ctx.fillStyle=S[j].color;ctx.fillRect(lx,ly-4,12,8);
+          ctx.fillStyle=TC;ctx.fillText(S[j].name,lx+16,ly);
+          lx+=16+ctx.measureText(S[j].name).width+16;
+        }}
+        ctx.restore();
+      }}
+      /* title */
+      ctx.fillStyle=TC;ctx.font="bold 12px "+FONT;ctx.textAlign="center";ctx.textBaseline="top";
       ctx.fillText(p.name,_W/2,6);
     }}
 
@@ -885,9 +1227,17 @@ P.forEach(function(p){{
       if(PX&&PY){{ctx.fillStyle=p.point_color;
         for(let i=0;i<PX.length;i++){{if(PY[i]==null)continue;ctx.beginPath();ctx.arc(sx(PX[i]),sy(PY[i]),3.2,0,Math.PI*2);ctx.fill();}}}}
 
-      /* trade markers — LONG (green ^) / SHORT (red v) for the active frame */
+      /* trade markers — N LONG (green ^) / SHORT (red v) per frame, each with a drop-line to the curve */
       if(fr&&fr.trade){{
         const T=fr.trade;
+        /* linear-interp the fitted curve y at an x (the drop-line's curve endpoint) */
+        function cyAt(xv){{
+          if(!mean)return null;let lo=-1;
+          for(let i=0;i<GX.length;i++){{if(GX[i]<=xv)lo=i;else break;}}
+          if(lo<0)return mean[0];if(lo>=GX.length-1)return mean[GX.length-1];
+          const a=mean[lo],b=mean[lo+1];if(a==null||b==null)return a==null?b:a;
+          return a+(b-a)*((xv-GX[lo])/(GX[lo+1]-GX[lo]));
+        }}
         function tri(cx,cy,col,up,lbl){{
           ctx.save();ctx.fillStyle=col;ctx.strokeStyle="rgba(0,0,0,0.45)";ctx.lineWidth=0.8;ctx.beginPath();const s=5;
           if(up){{ctx.moveTo(cx,cy-s);ctx.lineTo(cx-s,cy+s);ctx.lineTo(cx+s,cy+s);}}
@@ -897,8 +1247,18 @@ P.forEach(function(p){{
             ctx.textBaseline=up?"top":"bottom";ctx.fillText(lbl,cx,up?cy+s+3:cy-s-3);}}
           ctx.restore();
         }}
-        if(T.long)tri(sx(T.long[0]),sy(T.long[1]),LONG_C,true,T.long[2]);
-        if(T.short)tri(sx(T.short[0]),sy(T.short[1]),SHORT_C,false,T.short[2]);
+        function drawSide(arr,col,up){{
+          if(!arr)return;
+          for(let i=0;i<arr.length;i++){{
+            const m=arr[i];if(!m||m[0]==null||m[1]==null)continue;
+            const cyv=cyAt(m[0]);                                  /* dashed vertical drop-line to the curve */
+            if(cyv!=null){{ctx.save();ctx.strokeStyle=col;ctx.globalAlpha=0.5;ctx.lineWidth=1;ctx.setLineDash([3,3]);
+              ctx.beginPath();ctx.moveTo(sx(m[0]),sy(m[1]));ctx.lineTo(sx(m[0]),sy(cyv));ctx.stroke();ctx.restore();}}
+            tri(sx(m[0]),sy(m[1]),col,up,m[2]);
+          }}
+        }}
+        drawSide(T.long,LONG_C,true);
+        drawSide(T.short,SHORT_C,false);
       }}
 
       /* axis labels */
@@ -1048,7 +1408,45 @@ P.forEach(function(p){{
       oc.save();oc.strokeStyle=p.color;oc.lineWidth=2;
       oc.beginPath();oc.arc(px,py,p.size+4,0,Math.PI*2);oc.stroke();
       oc.restore();
-      tip.innerHTML="<b>x:</b> "+fmt(X[best])+"<br><b>y:</b> "+fmt(Y[best]);
+      tip.innerHTML="<b>"+(p.x_label||"x")+":</b> "+fmt(X[best])
+        +"<br><b>"+(p.y_label||"y")+":</b> "+fmt(Y[best]);
+    }}
+
+    /* ── bars hover (slot + bar/segment under cursor) ───── */
+    if(p.type==="bars"){{
+      const L=p.labels,S=p.series,nL=p._nL,nS=p._nS,stack=p._stack;
+      const slotW=p._slotW,innerPad=p._innerPad,groupW=p._groupW,barW=p._barW,bgap=p._bgap,y0=p._y0;
+      const i=Math.floor((mx-_pad.left)/slotW);
+      if(i<0||i>=nL){{tip.style.display="none";return;}}
+      const sx0=_pad.left+i*slotW+innerPad;
+      const syB=v=>_pad.top+_pH-(v-_yMin)/(_yMax-_yMin)*_pH;
+      let h2="<b>"+L[i]+"</b>";
+      if(stack){{
+        let acc=0,tot=0,jHit=-1;
+        for(let j=0;j<nS;j++){{const v=S[j].values[i];if(v!=null)tot+=v;}}
+        for(let j=0;j<nS;j++){{
+          const v=S[j].values[i];if(v==null)continue;
+          const yTop=syB(acc+v),yBot=syB(acc);
+          if(my>=yTop&&my<=yBot){{jHit=j;
+            oc.save();oc.strokeStyle=S[j].color;oc.lineWidth=2;oc.strokeRect(sx0,yTop,groupW,yBot-yTop);oc.restore();}}
+          acc+=v;
+        }}
+        for(let j=0;j<nS;j++){{const v=S[j].values[i];if(v==null)continue;const hl=(j===jHit)?"font-weight:600":"";
+          h2+="<br><span style='color:"+S[j].color+"'>&#9632;</span> "
+            +(p.single?"":S[j].name+": ")+"<span style='"+hl+"'>"+fmtV(v)+"</span>";}}
+        if(nS>1)h2+="<br><b>total:</b> "+fmtV(tot);
+      }}else{{
+        const jHit=Math.floor((mx-sx0)/barW);
+        for(let j=0;j<nS;j++){{
+          const v=S[j].values[i];if(v==null||j!==jHit)continue;
+          const bx=sx0+j*barW+bgap/2,bw=barW-bgap,yv=syB(v),top=Math.min(yv,y0),hh=Math.abs(yv-y0);
+          oc.save();oc.strokeStyle=S[j].color;oc.lineWidth=2;oc.strokeRect(bx,top,bw,hh);oc.restore();
+        }}
+        for(let j=0;j<nS;j++){{const v=S[j].values[i];if(v==null)continue;const hl=(j===jHit)?"font-weight:600":"";
+          h2+="<br><span style='color:"+S[j].color+"'>&#9632;</span> "
+            +(p.single?"":S[j].name+": ")+"<span style='"+hl+"'>"+fmtV(v)+"</span>";}}
+      }}
+      tip.innerHTML=h2;
     }}
 
     /* ── curve hover (nearest point, else fit+band at x) ── */
@@ -1056,17 +1454,18 @@ P.forEach(function(p){{
       const cu=p._cur,GX=cu.x;
       let best=-1,bd=Infinity;
       if(cu.px&&cu.py){{for(let i=0;i<cu.px.length;i++){{if(cu.py[i]==null)continue;const dx=sx(cu.px[i])-mx,dy=sy(cu.py[i])-my,d=dx*dx+dy*dy;if(d<bd){{bd=d;best=i;}}}}}}
+      const XL=p.x_label||"x",YL=p.y_label||"y";
       if(best>=0&&Math.sqrt(bd)<26){{
         const X=sx(cu.px[best]),Y=sy(cu.py[best]);
         oc.save();oc.strokeStyle=p.point_color;oc.lineWidth=2;oc.beginPath();oc.arc(X,Y,7,0,Math.PI*2);oc.stroke();oc.restore();
-        let h="<b>x:</b> "+fmt(cu.px[best])+"<br><b>y:</b> "+fmt(cu.py[best]);
+        let h="<b>"+XL+":</b> "+fmt(cu.px[best])+"<br><b>"+YL+":</b> "+fmt(cu.py[best]);
         if(cu.mean){{let gi=0,gd=Infinity;for(let i=0;i<GX.length;i++){{const dd=Math.abs(GX[i]-cu.px[best]);if(dd<gd){{gd=dd;gi=i;}}}}
-          if(cu.mean[gi]!=null)h+="<br><b>resid:</b> "+fmt(cu.py[best]-cu.mean[gi]);}}
+          if(cu.mean[gi]!=null)h+="<br><b>"+(p.resid_label||"resid")+":</b> "+fmt(cu.py[best]-cu.mean[gi]);}}
         tip.innerHTML=h;
       }}else{{
         let gi=0,gd=Infinity;for(let i=0;i<GX.length;i++){{const dd=Math.abs(sx(GX[i])-mx);if(dd<gd){{gd=dd;gi=i;}}}}
-        let h="<b>x:</b> "+fmt(GX[gi]);
-        if(cu.mean&&cu.mean[gi]!=null)h+="<br><b>fit:</b> "+fmt(cu.mean[gi]);
+        let h="<b>"+XL+":</b> "+fmt(GX[gi]);
+        if(cu.mean&&cu.mean[gi]!=null)h+="<br><b>"+(p.mean_name||"fit")+":</b> "+fmt(cu.mean[gi]);
         if(cu.lower&&cu.upper&&cu.lower[gi]!=null)h+="<br><b>band:</b> "+fmt(cu.lower[gi])+" – "+fmt(cu.upper[gi]);
         if(cu.mean&&cu.mean[gi]!=null){{oc.save();oc.fillStyle=p.color;oc.beginPath();oc.arc(sx(GX[gi]),sy(cu.mean[gi]),4,0,Math.PI*2);oc.fill();oc.restore();}}
         tip.innerHTML=h;

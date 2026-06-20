@@ -108,11 +108,23 @@ value label (Dashboard only).
                   show_median=True, fit=False, fit_color=None,
                   percentiles=None)
         # histogram; fit=True overlays Gaussian KDE; percentiles=[75,90,95,99]
-    .scatter(x, y, name=None, color=None, size=3)
+    .scatter(x, y, name=None, color=None, size=3, x_label=None, y_label=None)
+        # x_label/y_label also rename the hover fields (e.g. x_label="TTM")
+    .bars(x, by=None, values=None, bins=10, agg="count", mode="group",
+          bin_labels=None, name=None, color=None, show_values=True,
+          x_label=None, y_label=None)
+        # categorical/binned bars on an ORDINAL axis (vs distribution's
+        # continuous one). x = numeric to pd.cut into labelled slots, OR a
+        # precomputed dict {label:value} / {label:{series:value}}, DataFrame
+        # (index=slots, cols=series), or string-indexed Series.
+        # by= splits each slot into series; height = count or values aggregated
+        # by agg (sum/mean/median); mode="group"|"stack".
     .curve(x, mean=None, lower=None, upper=None, points=None, prior=None,
-           frames=None, base=None, ...)
+           frames=None, base=None, resid_label="resid", ...)
         # fitted line + confidence band + scatter dots (+ optional 2nd curve).
         # frames={date: {...}} adds a date slider that morphs the curve.
+        # hover fields rename via x_label / y_label / resid_label
+        # (e.g. x_label="TTM", y_label="YTM", resid_label="Spread-to-curve").
     .spread(x, frames=None, base=None, static_y=None, band=False, ...)
         # active−base difference panel; shares curve()'s slider when linked
 
