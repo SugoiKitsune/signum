@@ -13,21 +13,39 @@ Streamlit / standalone HTML).
         x_label="TTM (yrs)", y_label="Moneyness", z_label="Implied vol",
     ).show()
 
-PoC NOTE: echarts + echarts-gl load from a CDN here. For offline/vendored
-parity with lightweight-charts, drop the two ``*.min.js`` files into ``vendor/``
-and inline them instead of the ``<script src>`` tags. If this graduates, fold it
-into ``StatChart`` as ``StatChart.surface(x, y, z)`` reusing its grid/iframe code.
+PoC NOTE: echarts + echarts-gl are vendored under ``vendor/`` and inlined, so the
+output HTML is fully self-contained and works offline (no CDN) — just open it.
+If this graduates, fold it into ``StatChart`` as ``StatChart.surface(x, y, z)``
+reusing its grid/iframe pipeline.
 """
 
 import base64
 import html as _html
 import json
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 
 from .themes import resolve_theme
+
+_VENDOR = Path(__file__).resolve().parent.parent / "vendor"  # src/signum/vendor
+_ECHARTS_JS: Optional[str] = None
+
+
+def _echarts_js() -> str:
+    """Inlined echarts + echarts-gl (vendored — offline, self-contained).
+
+    echarts core must load before echarts-gl (the GL series register onto it).
+    Cached after first read.
+    """
+    global _ECHARTS_JS
+    if _ECHARTS_JS is None:
+        core = (_VENDOR / "echarts.min.js").read_text(encoding="utf-8")
+        gl = (_VENDOR / "echarts-gl.min.js").read_text(encoding="utf-8")
+        _ECHARTS_JS = f"<script>{core}</script>\n<script>{gl}</script>"
+    return _ECHARTS_JS
 
 # Perceptually-ordered colour ramps for the z (height) gradient. Diverging
 # 'rdylbu' suits a centred quantity (e.g. spread vs fair); the rest are
@@ -51,6 +69,7 @@ class Surface3D:
         height: int = 520,
         title: Optional[str] = None,
         colorscale: str = "viridis",
+        auto_rotate: bool = False,
         logo: bool = True,
     ):
         self._theme_name = theme.lower()
@@ -59,6 +78,7 @@ class Surface3D:
         self._height = height
         self._title = title
         self._colorscale = colorscale
+        self._auto_rotate = bool(auto_rotate)
         self._logo = logo
         self._panel: Optional[dict] = None
 
@@ -196,7 +216,7 @@ class Surface3D:
 
         opt = {
             "backgroundColor": bg,
-            "tooltip": {},
+            "tooltip": {"formatter": "__TTFMT__"},
             "visualMap": {
                 "show": True, "dimension": 2,
                 "min": p["zmin"], "max": p["zmax"],
@@ -214,7 +234,7 @@ class Surface3D:
                 "splitLine": {"lineStyle": {"color": grid_c}},
                 "environment": bg,
                 "viewControl": {
-                    "autoRotate": False, "projection": "perspective",
+                    "autoRotate": self._auto_rotate, "projection": "perspective",
                     "distance": 210, "alpha": 18, "beta": 35,
                 },
                 "light": {
@@ -235,6 +255,14 @@ class Surface3D:
             }],
         }
         opt_json = json.dumps(opt, separators=(",", ":"))
+        # Labelled hover formatter — echarts formatter is a JS function, so it
+        # can't live in the JSON; splice it in by token.
+        xl, yl, zl = (p["x_label"] or "x", p["y_label"] or "y", p["z_label"] or "z")
+        fmt_js = ("function(pp){var v=pp.value;if(!v)return '';return "
+                  + json.dumps(xl) + "+': '+(+v[0]).toFixed(3)+'<br>'+"
+                  + json.dumps(yl) + "+': '+(+v[1]).toFixed(3)+'<br>'+"
+                  + json.dumps(zl) + "+': '+(+v[2]).toFixed(4);}")
+        opt_json = opt_json.replace('"__TTFMT__"', fmt_js)
 
         title = self._title or p["name"]
         title_html = ""
@@ -247,8 +275,7 @@ class Surface3D:
             )
 
         return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"></script>
+{_echarts_js()}
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{width:100%;height:100%;overflow:hidden;background:{bg};font-family:{font};border-radius:12px}}
@@ -258,8 +285,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg};font-family:{f
 (function(){{
   var el=document.getElementById('c');
   if(!window.echarts||!echarts.init){{
-    el.innerHTML='<p style="color:{text};padding:24px;font:13px {font}">'
-      +'echarts/echarts-gl failed to load — this PoC pulls them from a CDN, so it needs internet at render time.</p>';
+    el.innerHTML='<p style="color:{text};padding:24px;font:13px {font}">echarts failed to initialise.</p>';
     return;
   }}
   var chart=echarts.init(el,null,{{renderer:'canvas'}});
