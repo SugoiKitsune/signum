@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from .themes import resolve_theme
+from .chart import _LOGO_B64
 
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"  # src/signum/vendor
 _ECHARTS_JS: Optional[str] = None
@@ -176,7 +177,7 @@ class Surface3D:
         if bg.startswith("#") and len(bg) >= 7:
             r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
             return (r * 0.299 + g * 0.587 + b * 0.114) < 140
-        return self._theme_name in ("dark", "midnight", "distfit")
+        return self._theme_name in ("dark", "midnight", "glass")
 
     @staticmethod
     def _rgba(color: Optional[str], alpha: float) -> Optional[str]:
@@ -274,13 +275,22 @@ class Surface3D:
                 f'{_html.escape(title)}</div>'
             )
 
+        logo_html = ""
+        if self._logo:
+            _inv = "" if self._is_dark() else "filter:invert(1);"
+            logo_html = (
+                f'<img src="data:image/svg+xml;base64,{_LOGO_B64}" width="30" height="30" '
+                f'alt="Signum" style="position:fixed;right:12px;bottom:8px;opacity:0.75;'
+                f'pointer-events:none;z-index:6;{_inv}">'
+            )
+
         return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 {_echarts_js()}
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{width:100%;height:100%;overflow:hidden;background:{bg};font-family:{font};border-radius:12px}}
 #c{{width:100%;height:100%}}
-</style></head><body>{title_html}<div id="c"></div>
+</style></head><body>{title_html}{logo_html}<div id="c"></div>
 <script>
 (function(){{
   var el=document.getElementById('c');

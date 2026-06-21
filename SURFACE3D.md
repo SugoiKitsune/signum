@@ -21,7 +21,7 @@ writes two **self-contained** HTML files (echarts + echarts-gl inlined from
 `src/signum/vendor/`, work offline) — open either in a browser:
 
 - `surface_iv.html` — synthetic equity implied-vol surface (smile + skew + term structure), `midnight` theme
-- `surface_bs.html` — Black-Scholes call-price surface vs spot × time, `distfit` theme
+- `surface_bs.html` — Black-Scholes call-price surface vs spot × time, `glass` theme
 
 Drag to rotate · scroll to zoom · hover for labelled x / y / z values.
 

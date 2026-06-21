@@ -53,7 +53,7 @@ if __name__ == "__main__":
     ).save(str(_OUT / "surface_iv.html"))
 
     x, y, z = bs_call_surface()
-    Surface3D(theme="distfit", height=560, title="Black-Scholes call price",
+    Surface3D(theme="glass", height=560, title="Black-Scholes call price",
               colorscale="turbo").surface(
         x, y, z, x_label="Spot", y_label="TTE (yrs)", z_label="Call price",
     ).save(str(_OUT / "surface_bs.html"))
