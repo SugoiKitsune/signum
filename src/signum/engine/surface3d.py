@@ -230,29 +230,14 @@ class Surface3D:
             "yAxis3D": axis3d("y", p["y_label"]),
             "zAxis3D": axis3d("z", p["z_label"]),
             "grid3D": {
-                "boxWidth": 110, "boxDepth": 110, "boxHeight": 85,
                 "axisLine": {"lineStyle": {"color": axis_c}},
-                "axisPointer": {"lineStyle": {"color": text}},
                 "splitLine": {"lineStyle": {"color": grid_c}},
-                "environment": bg,
-                "viewControl": {
-                    "autoRotate": self._auto_rotate, "projection": "perspective",
-                    "distance": 210, "alpha": 18, "beta": 35,
-                },
-                "light": {
-                    "main": {"intensity": 1.4, "shadow": True, "alpha": 40, "beta": 40},
-                    "ambient": {"intensity": 0.35},
-                },
+                "viewControl": {"autoRotate": self._auto_rotate},
             },
             "series": [{
                 "type": "surface",
-                "name": p["name"],
-                "wireframe": {
-                    "show": p["wireframe"],
-                    "lineStyle": {"color": self._rgba(text, 0.18), "width": 0.6},
-                },
+                "wireframe": {"show": p["wireframe"]},
                 "shading": p["shading"],
-                "itemStyle": {"opacity": 0.96},
                 "data": p["data"],
             }],
         }
@@ -296,7 +281,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg};font-family:{f
 (function(){{
   var el=document.getElementById('c');
   if(!window.echarts||!echarts.init){{
-    el.innerHTML='<p style="color:{text};padding:24px;font:13px {font}">echarts failed to initialise.</p>';
+    el.innerHTML='<p style="color:{text};padding:24px;font:13px sans-serif">echarts failed to initialise.</p>';
     return;
   }}
   var chart=echarts.init(el,null,{{renderer:'canvas'}});
