@@ -4,6 +4,8 @@ __pycache__/
 .ipynb_checkpoints/
 *.html
 !README.md
+# tracked theme review reference (open in a browser)
+!support/theme_gallery.html
 .vscode/
 *.egg-info/
 dist/
