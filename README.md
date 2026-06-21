@@ -40,7 +40,7 @@ chart  # renders inline in Jupyter
 - **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`
 - **Annotations** — `price_line`, `hline`, `marker`, `signals`, `shade`, `set_watermark`
 - **StatChart** — `distribution` (histogram + KDE), `scatter`, `curve` (fitted line + confidence band + date slider), `spread`
-- **Themes** — `dark` (default), `light`, `ft`, `midnight`, `rome`, `distfit`
+- **Themes** — `dark` (default), `light`, `ft`, `midnight`, `rome`, `glass`
 - **Dashboard** — multi-pane sync (crosshair, zoom, scroll)
 - **Output** — `.show()`, `.save()`, `.to_dash()`, `.to_streamlit()`, `.render()`
 

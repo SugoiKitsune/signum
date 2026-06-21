@@ -760,7 +760,7 @@ class Dashboard:
             return "<html><body>No panes</body></html>"
 
         bg = self._theme.get("chart", {}).get("layout", {}).get("background", {}).get("color", "#1e1e1e")
-        is_dark = self._theme_name in ("dark", "midnight", "distfit")
+        is_dark = self._theme_name in ("dark", "midnight", "glass")
         title_color = "rgba(255,255,255,0.55)" if is_dark else "rgba(0,0,0,0.55)"
         title_font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
@@ -770,7 +770,7 @@ class Dashboard:
             _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
             _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
         elif self._theme.get("background_css") or self._theme.get("background_svg"):
-            if self._theme_name not in ("dark", "midnight", "distfit"):
+            if self._theme_name not in ("dark", "midnight", "glass"):
                 _logo_invert = "filter:invert(1);"
 
         lc_js = _get_lc_js()
@@ -975,7 +975,7 @@ class Dashboard:
             _at = getattr(_at_pane, "_alloc_tooltip", None)
             if _at:
                 _at_chart_var = f"chart{_at_idx}"
-                _is_dk = self._theme_name in ("dark", "midnight", "distfit")
+                _is_dk = self._theme_name in ("dark", "midnight", "glass")
                 _box_bg = "rgba(10,10,26,0.75)" if _is_dk else "rgba(255,255,255,0.75)"
                 _lbl_c = "rgba(255,255,255,0.65)" if _is_dk else "rgba(0,0,0,0.60)"
                 _val_c = "rgba(255,255,255,0.90)" if _is_dk else "rgba(0,0,0,0.85)"
@@ -1000,6 +1000,7 @@ class Dashboard:
                     f"const allocData = {_ad_json};",
                     f"const allocAssets = {_aa_json};",
                     f"const allocColors = {_ac_json};",
+                    f"const allocHideZero = {str(bool(_at.get('hide_zero', True))).lower()};",
                     "const allocTooltip = document.getElementById('alloc-tooltip');",
                     "const allocItems = document.getElementById('alloc-items');",
                     "const allocTotals = document.getElementById('alloc-totals');",
@@ -1012,6 +1013,7 @@ class Dashboard:
                     "    allocAssets.forEach(function(asset, i) {",
                     "        const w = weights[asset] || 0;",
                     "        netExp += w; grossExp += Math.abs(w);",
+                    "        if (allocHideZero && Math.abs(w) < 1e-9) return;",
                     "        const color = allocColors[i];",
                     "        const dot = '<span style=\"display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:6px\"></span>';",
                     "        const sign = w >= 0 ? '+' : ''; const wFmt = (sign + w.toFixed(1)) + '%';",

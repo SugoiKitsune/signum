@@ -29,12 +29,16 @@ the same output methods: `.show()`, `.save(path)`, `.render()`, `.to_dash()`,
 
 Pass `theme=` to any constructor. Valid names (also `signum.THEME_NAMES`):
 
-    dark      default — neutral dark
-    light     clean white
+    dark      default — neutral dark (teal/red + blue)
+    light     clean white — green/crimson + neutral-gray (ForgeFolio light)
     ft        Financial Times salmon/serif
     midnight  deep navy (TradingView-like)
     rome      marble + Tyrian purple, serif
-    distfit   academic navy gradient — best for StatChart
+    glass     academic navy frosted gradient — best for StatChart
+
+light, ft, rome, glass mirror the matching ForgeFolio app themes (so signum
+charts embedded in ForgeFolio share its palette); dark, midnight are signum's
+own. (glass was formerly "distfit".)
 
 A misspelled theme raises `ValueError` listing valid names (via
 `signum.resolve_theme(name)`); it does NOT silently fall back.

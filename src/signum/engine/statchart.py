@@ -450,6 +450,7 @@ class StatChart:
             pts = f.get("points")
             rec["px"] = self._num_list(pts[0]) if pts is not None else None
             rec["py"] = self._num_list(pts[1]) if pts is not None else None
+            rec["plabels"] = [str(x) for x in f["labels"]] if f.get("labels") else None
             frame_array.append(rec)
         return frame_dates, frame_array
 
@@ -509,6 +510,7 @@ class StatChart:
         lower=None,
         upper=None,
         points=None,
+        point_labels: Optional[List[str]] = None,
         prior=None,
         name: Optional[str] = None,
         color: Optional[str] = None,
@@ -611,6 +613,7 @@ class StatChart:
             "upper": self._num_list(upper) if upper is not None else None,
             "px": self._num_list(points[0]) if points is not None else None,
             "py": self._num_list(points[1]) if points is not None else None,
+            "plabels": [str(x) for x in point_labels] if point_labels is not None else None,
             "prior": self._num_list(prior) if prior is not None else None,
             # framed
             "frames": frame_array,
@@ -676,7 +679,7 @@ class StatChart:
         if bg.startswith("#") and len(bg) >= 7:
             r, g, b = (int(bg[i:i+2], 16) for i in (1, 3, 5))
             return (r * 0.299 + g * 0.587 + b * 0.114) < 140
-        return self._theme_name in ("dark", "midnight", "distfit")
+        return self._theme_name in ("dark", "midnight", "glass")
 
     def _font_family(self) -> str:
         return (self._theme.get("chart", {})
@@ -876,7 +879,7 @@ P.forEach(function(p){{
   /* tooltip div */
   const tip=document.createElement("div");
   tip.style.cssText="position:absolute;display:none;pointer-events:none;"
-    +"padding:6px 10px;border-radius:4px;font:11px "+FONT+";"
+    +"padding:6px 10px;border-radius:4px;font:11px 'SF Mono','Consolas','Monaco','Menlo',monospace;"
     +"color:"+TT_FG+";background:"+TT_BG+";border:1px solid "+TT_BD+";"
     +"box-shadow:0 2px 8px rgba(0,0,0,0.3);z-index:10;white-space:nowrap;"
     +"line-height:1.5";
@@ -1171,8 +1174,9 @@ P.forEach(function(p){{
       const prior= fr?fr.prior:p.prior;
       const PX   = fr?fr.px:p.px;
       const PY   = fr?fr.py:p.py;
+      const PLAB = fr?fr.plabels:p.plabels;
       const baseM=(p.frames&&p.base_idx!=null)?p.frames[p.base_idx].mean:null;
-      p._cur={{x:GX,mean:mean,lower:lower,upper:upper,px:PX,py:PY}};
+      p._cur={{x:GX,mean:mean,lower:lower,upper:upper,px:PX,py:PY,plabels:PLAB}};
 
       _xMin=Infinity;_xMax=-Infinity;_yMin=Infinity;_yMax=-Infinity;
       for(let i=0;i<GX.length;i++){{if(GX[i]<_xMin)_xMin=GX[i];if(GX[i]>_xMax)_xMax=GX[i];}}
@@ -1458,7 +1462,7 @@ P.forEach(function(p){{
       if(best>=0&&Math.sqrt(bd)<26){{
         const X=sx(cu.px[best]),Y=sy(cu.py[best]);
         oc.save();oc.strokeStyle=p.point_color;oc.lineWidth=2;oc.beginPath();oc.arc(X,Y,7,0,Math.PI*2);oc.stroke();oc.restore();
-        let h="<b>"+XL+":</b> "+fmt(cu.px[best])+"<br><b>"+YL+":</b> "+fmt(cu.py[best]);
+        let h=(cu.plabels&&cu.plabels[best]?"<b>"+cu.plabels[best]+"</b><br>":"")+"<b>"+XL+":</b> "+fmt(cu.px[best])+"<br><b>"+YL+":</b> "+fmt(cu.py[best]);
         if(cu.mean){{let gi=0,gd=Infinity;for(let i=0;i<GX.length;i++){{const dd=Math.abs(GX[i]-cu.px[best]);if(dd<gd){{gd=dd;gi=i;}}}}
           if(cu.mean[gi]!=null)h+="<br><b>"+(p.resid_label||"resid")+":</b> "+fmt(cu.py[best]-cu.mean[gi]);}}
         tip.innerHTML=h;

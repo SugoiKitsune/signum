@@ -1,7 +1,11 @@
 """Theme definitions matching Signum's design system.
 
 Six themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire),
-distfit (academic probability — ideal for StatChart).
+glass (academic navy frost — ideal for StatChart; formerly "distfit").
+
+light, ft, rome and glass mirror the matching ForgeFolio app themes (ForgeFolio
+ThemeManager.colors) so signum charts embedded in ForgeFolio share its palette;
+dark and midnight are signum's own.
 
 The canonical name list is :data:`THEME_NAMES`; resolve a name to its palette
 with :func:`resolve_theme`, which raises a helpful error on a typo instead of
@@ -19,7 +23,7 @@ def resolve_theme(name: str) -> dict:
 
         >>> resolve_theme("darkmode")
         ValueError: Unknown theme 'darkmode'. Choose one of: dark, light, ft,
-        midnight, rome, distfit.
+        midnight, rome, glass.
     """
     key = (name or "").lower()
     if key not in THEMES:
@@ -88,7 +92,7 @@ THEMES: Dict[str, dict] = {
         "chart": {
             "layout": {
                 "background": {"type": "solid", "color": "#ffffff"},
-                "textColor": "#191919",
+                "textColor": "#1f2937",
                 "fontSize": 12,
                 "fontFamily": "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
             },
@@ -104,37 +108,38 @@ THEMES: Dict[str, dict] = {
             "rightPriceScale": {"borderColor": "rgba(0, 0, 0, 0.1)"},
             "timeScale": {"borderColor": "rgba(0, 0, 0, 0.1)"},
         },
+        # ForgeFolio light: deep-green profit / crimson loss, neutral-gray primary.
         "candlestick": {
-            "upColor": "#26a69a",
-            "downColor": "#ef5350",
-            "borderUpColor": "#26a69a",
-            "borderDownColor": "#ef5350",
-            "wickUpColor": "#26a69a",
-            "wickDownColor": "#ef5350",
+            "upColor": "#047857",
+            "downColor": "#b91c1c",
+            "borderUpColor": "#047857",
+            "borderDownColor": "#b91c1c",
+            "wickUpColor": "#047857",
+            "wickDownColor": "#b91c1c",
         },
-        "line": {"color": "#2962FF", "lineWidth": 2},
+        "line": {"color": "#6b7280", "lineWidth": 2},
         "line_colors": [
-            "#2962FF", "#FF6D00", "#E91E63", "#00897B",
-            "#43A047", "#7B1FA2", "#EF6C00", "#546E7A",
+            "#6b7280", "#047857", "#b91c1c", "#2563eb",
+            "#7c3aed", "#0891b2", "#ca8a04", "#4b5563",
         ],
         "area": {
-            "topColor": "rgba(41, 98, 255, 0.56)",
-            "bottomColor": "rgba(41, 98, 255, 0.04)",
-            "lineColor": "#2962FF",
+            "topColor": "rgba(107, 114, 128, 0.40)",
+            "bottomColor": "rgba(107, 114, 128, 0.04)",
+            "lineColor": "#6b7280",
             "lineWidth": 2,
         },
         "baseline": {
-            "topLineColor": "#26a69a",
-            "topFillColor1": "rgba(38, 166, 154, 0.28)",
-            "topFillColor2": "rgba(38, 166, 154, 0.05)",
-            "bottomLineColor": "#ef5350",
-            "bottomFillColor1": "rgba(239, 83, 80, 0.05)",
-            "bottomFillColor2": "rgba(239, 83, 80, 0.28)",
+            "topLineColor": "#047857",
+            "topFillColor1": "rgba(4, 120, 87, 0.28)",
+            "topFillColor2": "rgba(4, 120, 87, 0.05)",
+            "bottomLineColor": "#b91c1c",
+            "bottomFillColor1": "rgba(185, 28, 28, 0.05)",
+            "bottomFillColor2": "rgba(185, 28, 28, 0.28)",
         },
-        "histogram": {"color": "#26a69a"},
+        "histogram": {"color": "#6b7280"},
         "volume": {
-            "upColor": "rgba(38, 166, 154, 0.5)",
-            "downColor": "rgba(239, 83, 80, 0.5)",
+            "upColor": "rgba(4, 120, 87, 0.5)",
+            "downColor": "rgba(185, 28, 28, 0.5)",
         },
     },
 
@@ -303,10 +308,10 @@ THEMES: Dict[str, dict] = {
         },
     },
 
-    # ── Distfit (Academic / Probability) ───────────────────────────────────
-    # Inspired by distfit library aesthetics: dark navy gradient background,
-    # white italic serif, outlined bars, smooth PDF overlays.
-    "distfit": {
+    # ── Glass (academic navy frost — formerly "distfit") ───────────────────
+    # Dark navy radial-gradient background, cream italic serif, outlined bars,
+    # smooth PDF overlays. signum and ForgeFolio share this palette as "glass".
+    "glass": {
         "chart": {
             "layout": {
                 "background": {"type": "solid", "color": "#232b45"},

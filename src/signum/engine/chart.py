@@ -702,6 +702,7 @@ class Chart:
         style: str = "area",
         tooltip: bool = True,
         stacked: bool = True,
+        hide_zero: bool = True,
         **options,
     ) -> "Chart":
         """Add multiple allocation series for portfolio visualization.
@@ -917,6 +918,7 @@ class Chart:
                 "assets": allocation_cols,
                 "colors": [colors[i % len(colors)] for i in range(len(allocation_cols))],
                 "data": alloc_data,
+                "hide_zero": hide_zero,
             }
         
         # Configure right price scale with percentage formatting
@@ -1433,7 +1435,7 @@ class Chart:
         opts["layout"] = layout
 
         if self._watermark:
-            is_dark = self._theme_name in ("dark", "midnight", "distfit")
+            is_dark = self._theme_name in ("dark", "midnight", "glass")
             opts["watermark"] = {
                 "visible": True,
                 "text": self._watermark,
@@ -1518,12 +1520,12 @@ class Chart:
             if _r * 0.299 + _g * 0.587 + _b * 0.114 > 150:
                 _logo_invert = "filter:invert(1);"
         elif custom_bg_css or bg_svg:
-            # Only invert if the theme is actually light (distfit is dark with a CSS gradient)
-            if self._theme_name not in ("dark", "midnight", "distfit"):
+            # Only invert if the theme is actually light (glass is dark with a CSS gradient)
+            if self._theme_name not in ("dark", "midnight", "glass"):
                 _logo_invert = "filter:invert(1);"
 
         # ── Threshold slider components ───────────────────────────────────
-        is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+        is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
         slider_html = ""
         slider_js = ""
         slider_extra_height = 0
@@ -1626,7 +1628,7 @@ class Chart:
         if self._stats_legend:
             sl = self._stats_legend
             pos = sl["position"]
-            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+            is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
             box_bg = "rgba(10,10,26,0.62)" if is_dark_bg else "rgba(255,255,255,0.68)"
             lbl_c  = "rgba(255,255,255,0.55)" if is_dark_bg else "rgba(0,0,0,0.45)"
             val_c  = "rgba(255,255,255,0.92)" if is_dark_bg else "rgba(0,0,0,0.88)"
@@ -1661,7 +1663,7 @@ class Chart:
         alloc_tooltip_js = ""
         if self._alloc_tooltip:
             at = self._alloc_tooltip
-            is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+            is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
             box_bg = "rgba(10,10,26,0.85)" if is_dark_bg else "rgba(255,255,255,0.90)"
             lbl_c  = "rgba(255,255,255,0.72)" if is_dark_bg else "rgba(0,0,0,0.65)"
             val_c  = "rgba(255,255,255,0.95)" if is_dark_bg else "rgba(0,0,0,0.92)"
@@ -1775,7 +1777,7 @@ class Chart:
         smoothing_html = ""
         smoothing_js   = ""
         smoothing_extra_height = 0
-        is_dark_bg = self._theme_name in ("dark", "midnight", "distfit")
+        is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
         _lbl_c = "rgba(255,255,255,0.88)" if is_dark_bg else "rgba(0,0,0,0.78)"
         for sc_idx, sc in enumerate(self._smoothing_configs):
             smoothing_extra_height += 36

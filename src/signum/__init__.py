@@ -20,7 +20,7 @@ Public API
 ``set_execution``  Global default execution lag for ``threshold_control()``.
 
 Themes (pass as ``theme=``): see ``THEME_NAMES`` —
-dark (default), light, ft, midnight, rome, distfit.
+dark (default), light, ft, midnight, rome, glass.
 
 Output methods on every chart: ``.show()`` (Jupyter), ``.save(path)`` (HTML),
 ``.to_dash(id=...)``, ``.to_streamlit()``, ``.render()`` (raw HTML string).
