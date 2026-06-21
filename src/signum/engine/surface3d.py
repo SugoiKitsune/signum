@@ -137,10 +137,11 @@ class Surface3D:
                 f"({len(ya)}, {len(xa)})"
             )
 
-        # echarts-gl non-parametric surface wants a flat [x, y, z] grid.
+        # echarts-gl non-parametric surface wants a flat [x, y, z] grid, emitted
+        # x-outer / y-inner to match echarts-gl's own surface-data example.
         data: List[list] = []
-        for j in range(ny):
-            for i in range(nx):
+        for i in range(nx):
+            for j in range(ny):
                 v = zmat[j, i]
                 data.append([
                     round(float(xa[i]), 6),
