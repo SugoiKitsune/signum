@@ -4,14 +4,21 @@ Experimental, isolated on branch `feat/3d-surface`. **Not wired into main / `Sta
 A rotatable WebGL surface for vol surfaces, term-structure / continuous-time quant
 models, etc., themed from signum's `THEMES` so it matches Chart / StatChart.
 
-## Check it (no install, offline)
+## Check it
+
+**Inline in Jupyter (primary)** — open `surface_demo.ipynb` (run from this folder)
+and run all cells: the surfaces render **inline** via `_repr_html_` / `.show()`,
+same display API as Chart / StatChart. (Each inline chart embeds the vendored
+echarts ~2 MB, so don't commit executed outputs — run to view.)
+
+**Standalone HTML (offline)** —
 
 ```
 python surface_demo.py
 ```
 
 writes two **self-contained** HTML files (echarts + echarts-gl inlined from
-`src/signum/vendor/`, so they work offline) — open either in a browser:
+`src/signum/vendor/`, work offline) — open either in a browser:
 
 - `surface_iv.html` — synthetic equity implied-vol surface (smile + skew + term structure), `midnight` theme
 - `surface_bs.html` — Black-Scholes call-price surface vs spot × time, `distfit` theme
