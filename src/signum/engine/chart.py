@@ -703,6 +703,10 @@ class Chart:
         tooltip: bool = True,
         stacked: bool = True,
         hide_zero: bool = True,
+        mode: str = "weights",
+        value: Optional[Any] = None,
+        base_value: float = 100.0,
+        weights_pct: Optional[bool] = None,
         **options,
     ) -> "Chart":
         """Add multiple allocation series for portfolio visualization.
@@ -730,6 +734,20 @@ class Chart:
         stacked : bool, default True
             Stack areas cumulatively (longs up from 0, shorts down from 0).
             Set False for overlapping areas with separate scales.
+        mode : str, default "weights"
+            "weights" — bands are the weights themselves, so the stack sums to the target each day
+            (100%, ±100% long/short, ±300% leveraged); the envelope is flat over time.
+            "value" — bands are weightᵢ × portfolio NAV(t), with NAV rebased to `base_value` on day 1,
+            so the stacked envelope IS the equity curve and each band enlarges as the book compounds.
+            The hover tooltip still reports each holding as a % of that day's portfolio.
+        value : pd.Series or pd.DataFrame, optional
+            Required for mode="value": the portfolio NAV/equity over time (Series indexed by date, or a
+            DataFrame with a time column + a value column). Aligned to `df` by date and rebased to `base_value`.
+        base_value : float, default 100.0
+            Starting NAV for value mode (day-1 total of the stacked area).
+        weights_pct : bool, optional
+            Force-interpret the weights as percent (True) or fraction (False). Auto-detected when None
+            (percent if any |weight| > 1.5).
         **options
             Additional LightweightCharts series options.
         
@@ -757,7 +775,33 @@ class Chart:
         
         if not allocation_cols:
             raise ValueError("No allocation columns found. Specify allocation_cols explicitly.")
-        
+
+        mode = (mode or "weights").lower()
+        if mode not in ("weights", "value"):
+            raise ValueError("mode must be 'weights' (sum-to-target each day) or 'value' (compounds with NAV)")
+
+        # Are the weights in percent (0-100) or fraction (0-1)? Governs value-mode scaling + tooltip %.
+        _wmax = float(np.nanmax(np.abs(df[allocation_cols].to_numpy(dtype=float)))) if len(df) else 0.0
+        _is_pct = (_wmax > 1.5) if weights_pct is None else bool(weights_pct)
+
+        # Value mode: band height = weightᵢ × portfolio NAV(t), NAV rebased to base_value on day 1 — so the
+        # stacked envelope IS the equity curve and bands enlarge as the book compounds. Tooltip stays % of book.
+        nav_arr = None
+        if mode == "value":
+            if value is None:
+                raise ValueError("mode='value' requires `value` (a portfolio NAV/equity series over time)")
+            if isinstance(value, pd.DataFrame):
+                _tc = "time" if "time" in value.columns else value.columns[0]
+                _vc = [c for c in value.columns if c != _tc][-1]
+                _nav = pd.Series(pd.to_numeric(value[_vc], errors="coerce").values,
+                                 index=pd.to_datetime(value[_tc]))
+            else:
+                _nav = pd.Series(pd.to_numeric(value, errors="coerce").values,
+                                 index=pd.to_datetime(getattr(value, "index", value)))
+            _nav = _nav.sort_index()
+            _nav = _nav / _nav.dropna().iloc[0] * float(base_value)   # rebase day-1 to base_value
+            nav_arr = _nav.reindex(pd.to_datetime(df["time"])).ffill().bfill().to_numpy()
+
         # Default colors: refined palette with soft, professional colors
         if colors is None:
             # Refined palette: muted, sophisticated tones with good contrast
@@ -781,20 +825,29 @@ class Chart:
         else:
             series_type = "LineSeries"
         
+        # Per-asset magnitudes to plot: raw weights, or value-scaled bands (weightᵢ × NAV) in value mode.
+        if mode == "value":
+            _frac = 100.0 if _is_pct else 1.0
+            plot_df = df[["time"]].copy()
+            for col in allocation_cols:
+                plot_df[col] = (pd.to_numeric(df[col], errors="coerce").to_numpy() / _frac) * nav_arr
+        else:
+            plot_df = df
+
         # Compute cumulative sums for stacking
         if stacked and series_type == "AreaSeries":
             # For long/short portfolios: stack longs upward from 0, shorts downward from 0
-            cumulative_df = df[["time"]].copy()
-            
-            for i in df.index:
+            cumulative_df = plot_df[["time"]].copy()
+
+            for i in plot_df.index:
                 long_sum = 0.0
                 short_sum = 0.0
-                
+
                 for col in allocation_cols:
-                    val = df.loc[i, col]
+                    val = plot_df.loc[i, col]
                     if pd.isna(val):
                         val = 0.0
-                    
+
                     if val > 0:
                         long_sum += val
                         cumulative_df.loc[i, col] = long_sum
@@ -802,9 +855,13 @@ class Chart:
                         short_sum += val
                         cumulative_df.loc[i, col] = short_sum
                     else:
-                        cumulative_df.loc[i, col] = 0.0
+                        # Zero-weight name: carry the running long total (a zero-thickness band riding the
+                        # current top) instead of dropping the line to 0. Keeps every cumulative line
+                        # monotonically nested through linear interpolation, so a name dropping out / loading
+                        # in at a rotation no longer crosses its neighbours and leaves a black V-notch gap.
+                        cumulative_df.loc[i, col] = long_sum
         else:
-            cumulative_df = df.copy()
+            cumulative_df = plot_df.copy()
         
         # Add a series for each allocation (reverse order for proper stacking visual)
         for idx, col in enumerate(reversed(allocation_cols)):
@@ -853,7 +910,8 @@ class Chart:
                         "lastValueVisible": False,
                         "priceLineVisible": False,
                         "crosshairMarkerVisible": True,
-                        "crosshairMarkerRadius": 4,
+                        "crosshairMarkerRadius": 2,
+                        "crosshairMarkerBorderWidth": 0,
                         "crosshairMarkerBorderColor": base_color,
                         "crosshairMarkerBackgroundColor": base_color,
                         "priceScaleId": "right",
@@ -909,9 +967,10 @@ class Chart:
             # Build allocation data lookup using the same date string format as series data
             # After _prepare_time, dates are in "YYYY-MM-DD" string format
             alloc_data = {}
+            _pmul = 100.0 if (mode == "value" and not _is_pct) else 1.0  # value-mode fractions → report as %
             for _, row in df.iterrows():
                 date_key = str(row["time"])  # Already a string from _prepare_time
-                alloc_data[date_key] = {col: float(row[col]) if pd.notna(row[col]) else 0.0 
+                alloc_data[date_key] = {col: float(row[col]) * _pmul if pd.notna(row[col]) else 0.0
                                         for col in allocation_cols}
             
             self._alloc_tooltip = {
@@ -932,7 +991,7 @@ class Chart:
                     "borderVisible": False,
                     "scaleMargins": {"top": 0.05, "bottom": 0.05},
                 },
-                "formatter": "percent"  # Add percentage formatter
+                "formatter": "value" if mode == "value" else "percent"
             })
         
         return self
@@ -1457,6 +1516,14 @@ class Chart:
                         f"priceFormatter: (price) => price.toFixed(0) + '%'"
                         f"}}}});"
                     )
+                elif s.get("formatter") == "value":
+                    # Value (NAV) axis — plain number, k-suffix for thousands
+                    lines.append(
+                        f"{chart_var}.applyOptions({{"
+                        f"localization: {{"
+                        f"priceFormatter: (price) => (Math.abs(price) >= 1000 ? (price/1000).toFixed(1)+'k' : price.toFixed(0))"
+                        f"}}}});"
+                    )
                 lines.append(
                     f"{chart_var}.priceScale('{s['scale_id']}').applyOptions("
                     f"{self._json(s['options'])});"
@@ -1674,12 +1741,14 @@ class Chart:
                 f'background:{box_bg};'
                 f'backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);'
                 f'border:1px solid rgba(255,255,255,0.12);'
-                f'border-radius:8px;padding:10px 14px;display:none;'
-                f'box-shadow:0 4px 16px rgba(0,0,0,0.3);min-width:200px;">'
-                f'<div id="alloc-date" style="color:{date_c};font:11px/1.4 \'SF Mono\',\'Consolas\',monospace;'
-                f'margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.08);'
+                f'border-radius:8px;padding:8px 12px;display:none;'
+                f'box-shadow:0 4px 16px rgba(0,0,0,0.3);min-width:148px;'
+                f'max-height:calc(100% - 24px);box-sizing:border-box;overflow:hidden;">'
+                f'<div id="alloc-date" style="color:{date_c};font:10px/1.3 \'SF Mono\',\'Consolas\',monospace;'
+                f'margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid rgba(255,255,255,0.08);'
                 f'font-weight:600"></div>'
-                f'<div id="alloc-items" style="font:11px/1.8 \'SF Mono\',\'Consolas\',monospace"></div>'
+                f'<div id="alloc-items" style="font:10px/1.3 \'SF Mono\',\'Consolas\',monospace;'
+                f'max-height:calc(100% - 64px);overflow-y:auto"></div>'
                 f'<div id="alloc-totals" style="color:{lbl_c};font:10px/1.7 \'SF Mono\',\'Consolas\',monospace;'
                 f'margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08)"></div>'
                 f'</div>'
@@ -1699,6 +1768,7 @@ class Chart:
                 f"    const allocData = {alloc_data_json};",
                 f"    const allocAssets = {assets_json};",
                 f"    const allocColors = {colors_json};",
+                f"    const allocHideZero = {json.dumps(at['hide_zero'])};",
                 "    const allocTooltip = document.getElementById('alloc-tooltip');",
                 "    const allocDate = document.getElementById('alloc-date');",
                 "    const allocItems = document.getElementById('alloc-items');",
@@ -1726,21 +1796,22 @@ class Chart:
                 "            const w = weights[asset] || 0;",
                 "            netExp += w;",
                 "            grossExp += Math.abs(w);",
+                "            if (allocHideZero && Math.abs(w) < 1e-9) return;   // hide zero positions on this date",
                 "            const color = allocColors[i];",
                 "            const colorDot = '<span style=\"display:inline-block;width:10px;height:10px;border-radius:3px;background:' + color + ';margin-right:8px\"></span>';",
                 "            const sign = w >= 0 ? '+' : '';",
                 "            const wFormatted = (sign + w.toFixed(1)) + '%';",
                 f"            const textColor = w < 0 ? '{short_color}' : '{val_c}';",
-                f"            html += '<div style=\"display:flex;justify-content:space-between;align-items:center;margin:3px 0\">';",
+                f"            html += '<div style=\"display:flex;justify-content:space-between;align-items:center;margin:1px 0\">';",
                 f"            html += '<span style=\"color:{lbl_c};display:flex;align-items:center\">' + colorDot + asset + '</span>';",
-                f"            html += '<span style=\"color:' + textColor + ';font-weight:700;margin-left:16px;font-size:12px\">' + wFormatted + '</span>';",
+                f"            html += '<span style=\"color:' + textColor + ';font-weight:700;margin-left:8px;font-size:11px\">' + wFormatted + '</span>';",
                 f"            html += '</div>';",
                 "        });",
                 "        allocItems.innerHTML = html;",
                 "        ",
                 "        const netSign = netExp >= 0 ? '+' : '';",
-                f"        allocTotals.innerHTML = '<div style=\"font-weight:600\">Net: ' + netSign + netExp.toFixed(1) + '%</div>' +",
-                f"                                '<div>Gross: ' + grossExp.toFixed(1) + '% (' + (grossExp/100).toFixed(2) + 'x)</div>';",
+                f"        allocTotals.innerHTML = '<div style=\"display:flex;justify-content:space-between;font-weight:600\"><span>Net</span><span style=\"margin-left:8px\">' + netSign + netExp.toFixed(1) + '%</span></div>' +",
+                f"                                '<div style=\"display:flex;justify-content:space-between\"><span>Gross</span><span style=\"margin-left:8px\">' + grossExp.toFixed(1) + '% (' + (grossExp/100).toFixed(2) + 'x)</span></div>';",
                 "        ",
                 "        allocTooltip.style.display = 'block';",
                 "    });",
