@@ -451,6 +451,8 @@ class StatChart:
             rec["px"] = self._num_list(pts[0]) if pts is not None else None
             rec["py"] = self._num_list(pts[1]) if pts is not None else None
             rec["plabels"] = [str(x) for x in f["labels"]] if f.get("labels") else None
+            rec["pcolors"] = [str(x) for x in f["colors"]] if f.get("colors") else None
+            rec["psizes"] = self._num_list(f["sizes"]) if f.get("sizes") is not None else None
             frame_array.append(rec)
         return frame_dates, frame_array
 
@@ -511,6 +513,10 @@ class StatChart:
         upper=None,
         points=None,
         point_labels: Optional[List[str]] = None,
+        point_colors: Optional[List[str]] = None,
+        point_sizes: Optional[List[float]] = None,
+        point_legend: Optional[dict] = None,
+        extras: Optional[List[dict]] = None,
         prior=None,
         name: Optional[str] = None,
         color: Optional[str] = None,
@@ -614,6 +620,11 @@ class StatChart:
             "px": self._num_list(points[0]) if points is not None else None,
             "py": self._num_list(points[1]) if points is not None else None,
             "plabels": [str(x) for x in point_labels] if point_labels is not None else None,
+            "pcolors": [str(x) for x in point_colors] if point_colors is not None else None,
+            "psizes": self._num_list(point_sizes) if point_sizes is not None else None,
+            "extras": [{"y": self._num_list(e["y"]), "name": str(e.get("name", "")), "color": str(e.get("color", "#888888"))}
+                       for e in extras] if extras else None,
+            "plegend": [{"t": str(k), "c": str(v)} for k, v in point_legend.items()] if point_legend else None,
             "prior": self._num_list(prior) if prior is not None else None,
             # framed
             "frames": frame_array,
@@ -1175,6 +1186,9 @@ P.forEach(function(p){{
       const PX   = fr?fr.px:p.px;
       const PY   = fr?fr.py:p.py;
       const PLAB = fr?fr.plabels:p.plabels;
+      const PCOL = fr?fr.pcolors:p.pcolors;
+      const PSZ  = fr?fr.psizes:p.psizes;
+      const EXTRAS = p.extras;   /* extra reference lines: y/name/color */
       const baseM=(p.frames&&p.base_idx!=null)?p.frames[p.base_idx].mean:null;
       p._cur={{x:GX,mean:mean,lower:lower,upper:upper,px:PX,py:PY,plabels:PLAB}};
 
@@ -1225,11 +1239,15 @@ P.forEach(function(p){{
       if(baseM){{ctx.strokeStyle=RC;ctx.lineWidth=1.5;pline(baseM,[5,4]);}}
       /* second curve / prior */
       if(prior){{ctx.strokeStyle=p.prior_color||RC;ctx.lineWidth=1.6;pline(prior,[7,4]);}}
+      /* extra reference lines */
+      if(EXTRAS){{for(const e of EXTRAS){{if(!e.y)continue;ctx.strokeStyle=e.color;ctx.lineWidth=1.6;pline(e.y,[4,3]);}}}}
       /* fitted mean */
       if(mean){{ctx.strokeStyle=p.color;ctx.lineWidth=2.6;ctx.lineJoin="round";ctx.lineCap="round";pline(mean,null);}}
-      /* observed points */
-      if(PX&&PY){{ctx.fillStyle=p.point_color;
-        for(let i=0;i<PX.length;i++){{if(PY[i]==null)continue;ctx.beginPath();ctx.arc(sx(PX[i]),sy(PY[i]),3.2,0,Math.PI*2);ctx.fill();}}}}
+      /* observed points (per-point colour when pcolors given, e.g. by instrument type) */
+      if(PX&&PY){{
+        for(let i=0;i<PX.length;i++){{if(PY[i]==null)continue;
+          ctx.fillStyle=(PCOL&&PCOL[i])?PCOL[i]:p.point_color;
+          ctx.beginPath();ctx.arc(sx(PX[i]),sy(PY[i]),(PSZ&&PSZ[i]!=null?PSZ[i]:3.2),0,Math.PI*2);ctx.fill();}}}}
 
       /* trade markers — N LONG (green ^) / SHORT (red v) per frame, each with a drop-line to the curve */
       if(fr&&fr.trade){{
@@ -1272,12 +1290,15 @@ P.forEach(function(p){{
 
       /* legend (top-left, below title) */
       (function(){{
+        const ptItems=(p.plegend&&PX&&PY)?p.plegend.map(e=>({{c:e.c,t:e.t,dot:true}}))
+                     :((PX&&PY)?[{{c:p.point_color,t:p.point_name,dot:true}}]:[]);
         const items=[
           mean?{{c:p.color,t:p.mean_name}}:null,
           (lower&&upper)?{{c:p.band_color,t:p.band_label,box:true}}:null,
           prior?{{c:p.prior_color||RC,t:p.prior_name,dash:true}}:null,
           baseM?{{c:RC,t:p.base_name,dash:true}}:null,
-          (PX&&PY)?{{c:p.point_color,t:p.point_name,dot:true}}:null,
+          ...(EXTRAS?EXTRAS.map(e=>({{c:e.color,t:e.name,dash:true}})):[]),
+          ...ptItems,
         ].filter(Boolean);
         if(!items.length)return;
         ctx.save();ctx.font="10px "+FONT;ctx.textBaseline="middle";ctx.textAlign="left";
