@@ -63,9 +63,18 @@ A misspelled theme raises `ValueError` listing valid names (via
               line=False, tag=False, **options)   # green above / red below
     .histogram(df, name=None, value_col=None, color=None,
                line=False, tag=False, **options)
-    .allocation(df, allocation_cols=None, colors=None, opacity=0.6,
-                style="area", tooltip=True, stacked=True, **options)
+    .allocation(df, allocation_cols=None, colors=None, color_map=None,
+                opacity=0.6, style="area", tooltip=True, stacked=True,
+                hide_zero=True, mode="weights", value=None, base_value=100.0,
+                weights_pct=None, **options)
         # portfolio weights: one column per asset; long stacks up, short down
+        # mode="value" scales bands by NAV (pass value=) so the envelope is the
+        #   equity curve; mode="weights" (default) sums to the target each day
+        # colours: 8 muted base tones, extended (never cycled) past 8 holdings —
+        #   extras are picked to sit as far as possible from the colours already
+        #   used, so 25 or 50 holdings never share a colour
+        # color_map={"AAPL": "#3987e5"} pins a name to a colour; without it a
+        #   colour tracks position, so a dropped holding repaints the ones below
 
 `line=True` / `tag=True` add a crosshair-following dashed line / right-axis
 value label (Dashboard only).

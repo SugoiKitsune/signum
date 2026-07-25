@@ -8,6 +8,7 @@ import json
 import math
 import re
 import html as html_module
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -29,6 +30,179 @@ def _get_lc_js() -> str:
     if _LC_JS_CACHE is None:
         _LC_JS_CACHE = _LC_JS_PATH.read_text(encoding="utf-8")
     return _LC_JS_CACHE
+
+
+# ── Allocation palette ────────────────────────────────────────────────────────
+# Muted, sophisticated tones for portfolio holdings.
+_ALLOC_PALETTE = [
+    "#6BA3D0",  # Soft steel blue
+    "#82C785",  # Sage green
+    "#F4A261",  # Warm apricot
+    "#E76F51",  # Terracotta
+    "#9B87C7",  # Soft lavender
+    "#5BC0BE",  # Teal
+    "#F18F9C",  # Dusty rose
+    "#8AB17D",  # Olive green
+]
+
+# Past the eighth holding the palette has to produce colours this list does not
+# contain.  They are picked, not computed from a formula — see ``_extend_palette``
+# — and each is chosen to sit as far as possible from every colour already in use,
+# in the same muted register as the eight above (both the lightness band and the
+# chroma ceiling are derived from them, so the extras read as more of the same
+# palette rather than as a second, louder one).
+#
+# The measuring stick throughout is OKLab ΔE, never hex equality.  Two hexes one
+# bit apart are the same colour to a reader, so "no repeats" has to mean
+# perceptually distinct or it means nothing: earlier attempts here produced
+# #00ca1b vs #1bca00 (ΔE 0.6) and #189541 vs #189530 (ΔE 1.9) — each a different
+# hex and an identical band on screen.  HLS is unusable for this, since 10° of its
+# hue is invisible through the greens and obvious through the blues; hence the
+# OKLCH conversions below.
+
+
+# ── OKLCH ⇄ sRGB ──────────────────────────────────────────────────────────────
+# Björn Ottosson's OKLab, plus the polar form.  Perceptually uniform, so equal
+# steps in it are equal steps to the eye — the whole point of using it here.
+
+def _hex_to_oklch(hex_color: str) -> tuple:
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+               for c in (r, g, b))
+    l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+    m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+    s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+    lig = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s
+    a_ = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s
+    b_ = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
+    return lig, math.hypot(a_, b_), math.atan2(b_, a_) % (2 * math.pi)
+
+
+def _oklch_to_rgb(lig: float, chroma: float, hue: float) -> tuple:
+    a_, b_ = chroma * math.cos(hue), chroma * math.sin(hue)
+    l = (lig + 0.3963377774 * a_ + 0.2158037573 * b_) ** 3
+    m = (lig - 0.1055613458 * a_ - 0.0638541728 * b_) ** 3
+    s = (lig - 0.0894841775 * a_ - 1.2914855480 * b_) ** 3
+    r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    return tuple(1.055 * (c ** (1 / 2.4)) - 0.055 if c > 0.0031308
+                 else 12.92 * c for c in (max(c, 0.0) for c in (r, g, b)))
+
+
+def _oklch_to_hex(lig: float, chroma: float, hue: float) -> str:
+    """OKLCH → hex, walking chroma down until the colour fits in sRGB.
+
+    Clamping the channels instead would silently shift hue — the failure mode
+    where two different requests clip to the same displayable colour.
+    """
+    lo, hi = 0.0, chroma
+    for _ in range(18):
+        if all(-1e-4 <= c <= 1 + 1e-4 for c in _oklch_to_rgb(lig, hi, hue)):
+            break
+        lo, hi = lo, (lo + hi) / 2
+    rgb = _oklch_to_rgb(lig, hi, hue)
+    return "#%02x%02x%02x" % tuple(round(min(1.0, max(0.0, c)) * 255) for c in rgb)
+
+
+def _oklab_of(hex_color: str) -> tuple:
+    lig, chroma, hue = _hex_to_oklch(hex_color)
+    return lig, chroma * math.cos(hue), chroma * math.sin(hue)
+
+
+def _candidate_pool(l_lo: float, l_hi: float, c_cap: float) -> List[tuple]:
+    """Displayable colours on a coarse OKLCH lattice, as (hex, OKLab) pairs.
+
+    Sampled in OKLCH so the lattice is perceptually even, then deduped by hex —
+    high-lightness rows run out of gamut and collapse onto each other, and a
+    duplicate in the pool would let the sampler "spend" a slot on a colour that is
+    already taken.
+    """
+    seen, pool = set(), []
+    steps = max(2, int(round((l_hi - l_lo) / 0.075)) + 1)
+    for li in range(steps):
+        lig = l_lo + (l_hi - l_lo) * li / (steps - 1)
+        for deg in range(0, 360, 6):
+            for frac in (1.0, 0.62, 0.34):
+                hexc = _oklch_to_hex(lig, c_cap * frac, math.radians(deg))
+                if hexc not in seen:
+                    seen.add(hexc)
+                    pool.append((hexc, _oklab_of(hexc)))
+    return pool
+
+
+@lru_cache(maxsize=32)
+def _extend_palette(n: int, base: tuple) -> tuple:
+    """Grow ``base`` to ``n`` colours by farthest-point sampling in OKLab.
+
+    Each new colour is the displayable one whose *nearest already-used* colour is
+    as far away as possible.  That maximises the minimum separation directly,
+    which is the property actually wanted ("no two holdings look alike") —
+    unlike stepping a formula, which can only hope for it and, on this palette's
+    uneven hue gaps, misses: red and orange sit ~20° apart, so anything that
+    subdivides per-slot gaps crams red's extras into that gap and reproduces the
+    near-duplicates it was meant to remove.
+
+    Sampling is also self-ordering: pick k+1 is far from every earlier pick, the
+    immediately preceding one included, so consecutive bands separate too.
+    """
+    lch = [_hex_to_oklch(c) for c in base]
+    mid = sum(l for l, _, _ in lch) / len(lch)
+    # Chroma ceiling comes from the palette itself, so the extras sit in its
+    # register — a fixed cap would make them louder than a muted base or duller
+    # than a vivid one.
+    c_cap = max(c for _, c, _ in lch)
+    # Widen the lightness band only as far as the count actually forces.  Spread in
+    # lightness is what buys separation once hue runs out, but it is also what makes
+    # a palette look like it contains near-blacks and near-whites, so it is spent
+    # reluctantly: at 25 holdings a ±0.09 band already separates as well as a wide
+    # one (both bottom out at the base palette's own closest pair), and only past
+    # ~35 does holding it tight start costing real distance.
+    half = min(0.15, 0.05 + 0.0024 * (n - len(base)))
+    pool = _candidate_pool(max(0.34, mid - half), min(0.88, mid + half), c_cap)
+    chosen = list(base)
+    chosen_lab = [_oklab_of(c) for c in base]
+    taken = set(base)
+    # Distance from each candidate to the nearest colour already chosen, updated
+    # incrementally — recomputing it per pick would be O(n²·pool) for no gain.
+    near = [min(math.dist(lab, c) for c in chosen_lab) for _, lab in pool]
+    while len(chosen) < n:
+        best = max(range(len(pool)), key=lambda i: near[i])
+        hexc, lab = pool[best]
+        if hexc in taken:                       # pool exhausted — nothing left to add
+            break
+        chosen.append(hexc)
+        taken.add(hexc)
+        near[best] = -1.0
+        for i, (_, lab_i) in enumerate(pool):
+            if near[i] > 0:
+                near[i] = min(near[i], math.dist(lab_i, lab))
+    return tuple(chosen)
+
+
+def _alloc_colors(n: int, base: List[str]) -> List[str]:
+    """Return ``n`` colours from ``base``, extended so none of them repeat.
+
+    The first ``len(base)`` come through untouched — the validated order above is
+    the common case and is not paraphrased.  Past that the palette is grown by
+    farthest-point sampling (see ``_extend_palette``), so 25 or 50 holdings each
+    get their own colour rather than a second copy of someone else's.
+
+    "Distinct" here means *visibly* distinct, not merely a different hex — the
+    floor is measured in OKLab ΔE, because two hexes one bit apart are the same
+    colour to a reader.  Separation still narrows as N grows: sRGB does not hold
+    50 colours as far apart as it holds 8, so past ~16 bands the honest fix is
+    fewer of them — roll the tail into an "Other" row — not more colours.
+    """
+    if not base:
+        return []
+    if n <= len(base):
+        return list(base[:n])
+    out = list(_extend_palette(n, tuple(base)))
+    while len(out) < n:          # only reachable if the lattice ran dry (~500 colours)
+        out.append(out[len(out) % len(base)])
+    return out
 
 
 class Chart:
@@ -698,6 +872,7 @@ class Chart:
         df: pd.DataFrame,
         allocation_cols: Optional[List[str]] = None,
         colors: Optional[List[str]] = None,
+        color_map: Optional[Dict[str, str]] = None,
         opacity: float = 0.6,
         style: str = "area",
         tooltip: bool = True,
@@ -724,7 +899,18 @@ class Chart:
             Column names containing allocation percentages (0-100 or 0-1).
             If None, uses all numeric columns except 'time'.
         colors : list of str, optional
-            Colors for each allocation series. If None, uses theme line colors.
+            Base colours for the holdings, defaulting to the eight muted tones in
+            ``_ALLOC_PALETTE``. Whatever the base list, it is *extended* rather
+            than cycled past its length: further colours are picked to sit as far
+            as possible from every colour already in use, in the same lightness
+            and chroma register as the base. So 25 or 50 holdings each get their
+            own colour — no two holdings on a chart ever share one.
+        color_map : dict of str -> str, optional
+            Pin specific holdings to specific colours, e.g. ``{"AAPL": "#3987e5"}``.
+            Names not listed fall back to the palette. Use this when holdings rotate
+            in and out and you want a name to keep its colour across charts —
+            otherwise a colour tracks a holding's *position*, so a dropped name
+            repaints everything below it.
         opacity : float, default 0.6
             Fill/bar opacity (0-1).
         style : str, default "area"
@@ -802,21 +988,13 @@ class Chart:
             _nav = _nav / _nav.dropna().iloc[0] * float(base_value)   # rebase day-1 to base_value
             nav_arr = _nav.reindex(pd.to_datetime(df["time"])).ffill().bfill().to_numpy()
 
-        # Default colors: refined palette with soft, professional colors
-        if colors is None:
-            # Refined palette: muted, sophisticated tones with good contrast
-            allocation_palette = [
-                "#6BA3D0",  # Soft steel blue
-                "#82C785",  # Sage green
-                "#F4A261",  # Warm apricot
-                "#E76F51",  # Terracotta
-                "#9B87C7",  # Soft lavender
-                "#5BC0BE",  # Teal
-                "#F18F9C",  # Dusty rose
-                "#8AB17D",  # Olive green
-            ]
-            colors = allocation_palette * ((len(allocation_cols) // len(allocation_palette)) + 1)
-        
+        # Colours: the palette above, extended (never repeated) to however many
+        # holdings there are, then overridden per name by color_map.
+        base_palette = _ALLOC_PALETTE if colors is None else list(colors)
+        colors = _alloc_colors(len(allocation_cols), base_palette)
+        if color_map:
+            colors = [color_map.get(col, colors[i]) for i, col in enumerate(allocation_cols)]
+
         # Determine series type
         if style.lower() in ("area", "filled"):
             series_type = "AreaSeries"
@@ -877,9 +1055,12 @@ class Chart:
                 key=lambda r: r["time"],
             )
             
-            # Parse color and add opacity
-            base_color = colors[rev_idx % len(colors)]
-            if base_color.startswith('#'):
+            # Parse color and add opacity.  Non-hex colours (a CSS name or rgba()
+            # via color_map) can't be decomposed, so they pass through as-is —
+            # r/g/b still need values for the stacked branch below.
+            base_color = colors[rev_idx]
+            r = g = b = None
+            if base_color.startswith('#') and len(base_color.lstrip("#")) == 6:
                 hex_c = base_color.lstrip("#")
                 r, g, b = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
                 color_rgba = f"rgba({r},{g},{b},{opacity})"
@@ -887,7 +1068,7 @@ class Chart:
             else:
                 color_rgba = base_color
                 line_rgba = base_color
-            
+
             # Build series options based on type
             if series_type == "AreaSeries":
                 # For stacked mode: use BaselineSeries to ensure shorts fill toward 0, not chart bottom
@@ -895,8 +1076,8 @@ class Chart:
                     # Fully opaque fills so adjacent bands don't bleed through each other,
                     # especially during sign-flip transitions where a series' line wedges
                     # through 0 and crosses over neighboring bands.
-                    soft_line = f"rgba({r},{g},{b},0.85)"
-                    solid_fill = f"rgba({r},{g},{b},1.0)"
+                    soft_line = f"rgba({r},{g},{b},0.85)" if r is not None else base_color
+                    solid_fill = f"rgba({r},{g},{b},1.0)" if r is not None else base_color
                     
                     series_opts = {
                         "baseValue": {"type": "price", "price": 0},
@@ -922,7 +1103,7 @@ class Chart:
                     series_opts = {
                         "lineColor": line_rgba,
                         "topColor": color_rgba,
-                        "bottomColor": f"rgba({r},{g},{b},0.05)",
+                        "bottomColor": f"rgba({r},{g},{b},0.05)" if r is not None else "transparent",
                         "lineWidth": 2,
                         "title": col,
                         "priceScaleId": f"_alloc_{rev_idx}",
@@ -975,7 +1156,7 @@ class Chart:
             
             self._alloc_tooltip = {
                 "assets": allocation_cols,
-                "colors": [colors[i % len(colors)] for i in range(len(allocation_cols))],
+                "colors": list(colors),
                 "data": alloc_data,
                 "hide_zero": hide_zero,
             }
@@ -1529,7 +1710,7 @@ class Chart:
                     f"{self._json(s['options'])});"
                 )
                 continue
-            
+
             var = f"{var_prefix}s{i}"
             lines.append(
                 f"const {var} = {chart_var}.addSeries(LightweightCharts.{s['type']}, "
