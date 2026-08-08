@@ -81,7 +81,7 @@ class Surface3D:
         self._colorscale = colorscale
         self._auto_rotate = bool(auto_rotate)
         self._logo = logo
-        self._panel: Optional[dict] = None
+        self._panels: List[dict] = []
 
     # ── Panel ──────────────────────────────────────────────────────────────
 
@@ -95,6 +95,8 @@ class Surface3D:
         y_label: Optional[str] = None,
         z_label: Optional[str] = None,
         colorscale=None,
+        color: Optional[str] = None,
+        opacity: Optional[float] = None,
         wireframe: bool = True,
         shading: str = "color",
     ) -> "Surface3D":
@@ -109,6 +111,12 @@ class Surface3D:
         colorscale : str or list, optional
             One of viridis / magma / plasma / turbo / rdylbu, or an explicit
             list of CSS colours. Defaults to the instance colorscale.
+        color : str, optional
+            Flat CSS colour for this surface. Call ``.surface(...)`` more than
+            once to **overlay** multiple surfaces on one chart; give each a
+            distinct ``color`` and an ``opacity`` so they read apart.
+        opacity : float, optional
+            Surface opacity in [0, 1] (defaults to 0.7 in overlay mode).
         wireframe : bool
             Overlay a faint mesh grid on the surface.
         shading : {"color", "lambert", "realistic"}
@@ -156,18 +164,21 @@ class Surface3D:
         cs = colorscale if colorscale is not None else self._colorscale
         colors = cs if isinstance(cs, (list, tuple)) else _COLORSCALES.get(cs, _COLORSCALES["viridis"])
 
-        self._panel = {
-            "name": name or "Surface",
+        self._panels.append({
+            "name": name or f"Surface {len(self._panels) + 1}",
             "data": data,
+            "data_shape": [nx, ny],           # explicit grid dims -> no auto-detect striping
             "zmin": round(zmin, 6),
             "zmax": round(zmax, 6),
             "x_label": x_label,
             "y_label": y_label,
             "z_label": z_label,
             "colors": list(colors),
+            "color": color,                    # flat colour (overlay mode)
+            "opacity": opacity,
             "wireframe": bool(wireframe),
             "shading": shading,
-        }
+        })
         return self
 
     # ── Theme helpers (subset of StatChart's) ──────────────────────────────
@@ -195,9 +206,10 @@ class Surface3D:
     # ── Build ──────────────────────────────────────────────────────────────
 
     def _build_html(self) -> str:
-        if self._panel is None:
+        if not self._panels:
             return "<html><body>No surface defined — call .surface(x, y, z)</body></html>"
-        p = self._panel
+        panels = self._panels
+        p0 = panels[0]
         _layout = self._theme.get("chart", {}).get("layout", {})
         bg = _layout.get("background", {}).get("color", "#1e1e1e")
         text = _layout.get("textColor", "#d1d4dc")
@@ -216,42 +228,65 @@ class Surface3D:
                 "splitLine": {"lineStyle": {"color": grid_c}},
             }
 
+        # Overlay mode when >1 surface, or any surface asked for a flat colour:
+        # colour each surface by a flat itemStyle (so they read apart) and drop the
+        # z-gradient visualMap. A single gradient surface keeps the visualMap.
+        overlay = len(panels) > 1 or any(pp.get("color") for pp in panels)
+        series = []
+        for pp in panels:
+            s = {
+                "type": "surface",
+                "name": pp["name"],
+                "dataShape": pp["data_shape"],       # explicit grid -> no striping
+                "wireframe": {"show": pp["wireframe"]},
+                "shading": pp["shading"],
+                "data": pp["data"],
+            }
+            if overlay:
+                col = pp.get("color") or pp["colors"][len(pp["colors"]) // 2]
+                op = pp.get("opacity")
+                s["itemStyle"] = {"color": col, "opacity": op if op is not None else 0.7}
+            elif pp.get("opacity") is not None:
+                s["itemStyle"] = {"opacity": pp["opacity"]}
+            series.append(s)
+
         opt = {
             "backgroundColor": bg,
             "tooltip": {"formatter": "__TTFMT__"},
-            "visualMap": {
-                "show": True, "dimension": 2,
-                "min": p["zmin"], "max": p["zmax"],
-                "inRange": {"color": p["colors"]},
-                "textStyle": {"color": text, "fontFamily": font},
-                "right": 12, "top": "center", "calculable": True,
-            },
-            "xAxis3D": axis3d("x", p["x_label"]),
-            "yAxis3D": axis3d("y", p["y_label"]),
-            "zAxis3D": axis3d("z", p["z_label"]),
+            "xAxis3D": axis3d("x", p0["x_label"]),
+            "yAxis3D": axis3d("y", p0["y_label"]),
+            "zAxis3D": axis3d("z", p0["z_label"]),
             "grid3D": {
                 "axisLine": {"lineStyle": {"color": axis_c}},
                 "splitLine": {"lineStyle": {"color": grid_c}},
                 "viewControl": {"autoRotate": self._auto_rotate},
             },
-            "series": [{
-                "type": "surface",
-                "wireframe": {"show": p["wireframe"]},
-                "shading": p["shading"],
-                "data": p["data"],
-            }],
+            "series": series,
         }
+        if overlay:
+            opt["legend"] = {
+                "data": [pp["name"] for pp in panels],
+                "textStyle": {"color": text, "fontFamily": font}, "top": 8, "left": 8,
+            }
+        else:
+            opt["visualMap"] = {
+                "show": True, "dimension": 2,
+                "min": p0["zmin"], "max": p0["zmax"],
+                "inRange": {"color": p0["colors"]},
+                "textStyle": {"color": text, "fontFamily": font},
+                "right": 12, "top": "center", "calculable": True,
+            }
         opt_json = json.dumps(opt, separators=(",", ":"))
         # Labelled hover formatter — echarts formatter is a JS function, so it
         # can't live in the JSON; splice it in by token.
-        xl, yl, zl = (p["x_label"] or "x", p["y_label"] or "y", p["z_label"] or "z")
+        xl, yl, zl = (p0["x_label"] or "x", p0["y_label"] or "y", p0["z_label"] or "z")
         fmt_js = ("function(pp){var v=pp.value;if(!v)return '';return "
                   + json.dumps(xl) + "+': '+(+v[0]).toFixed(3)+'<br>'+"
                   + json.dumps(yl) + "+': '+(+v[1]).toFixed(3)+'<br>'+"
                   + json.dumps(zl) + "+': '+(+v[2]).toFixed(4);}")
         opt_json = opt_json.replace('"__TTFMT__"', fmt_js)
 
-        title = self._title or p["name"]
+        title = self._title or p0["name"]
         title_html = ""
         if title:
             tc = self._rgba(text, 0.95) or text
@@ -293,24 +328,16 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg};font-family:{f
     # ── Display (mirrors Chart / StatChart) ────────────────────────────────
 
     def _repr_html_(self) -> str:
-        html = self._build_html()
-        b64 = base64.b64encode(html.encode("utf-8")).decode("ascii")
+        # Inline `srcdoc` iframe. Renders in VSCode, JupyterLab and classic notebook.
+        # The previous `src=blob:` approach is blocked by VSCode's notebook-output CSP
+        # (frame-src forbids blob:), so the chart showed up blank there. echarts-gl is
+        # vendored/inlined in the doc, so srcdoc is fully self-contained (no CDN).
         h = self._height + (40 if self._title else 10)
-        uid = f"sf{id(self)}"
+        srcdoc = _html.escape(self._build_html(), quote=True)
         return (
-            f'<div id="{uid}" style="width:100%;height:{h}px;'
-            f'border-radius:12px;overflow:hidden;"></div><script>'
-            f'(function(){{'
-            f'var a=atob("{b64}"),b=new Uint8Array(a.length);'
-            f'for(var i=0;i<a.length;i++)b[i]=a.charCodeAt(i);'
-            f'var blob=new Blob([b],{{type:"text/html;charset=utf-8"}});'
-            f'var url=URL.createObjectURL(blob);'
-            f'var f=document.createElement("iframe");'
-            f'f.src=url;f.style.width="100%";f.style.height="{h}px";'
-            f'f.style.border="none";f.style.borderRadius="12px";'
-            f'document.getElementById("{uid}").appendChild(f);'
-            f'}})();'
-            f'</script>'
+            f'<iframe srcdoc="{srcdoc}" '
+            f'style="width:100%;height:{h}px;border:none;border-radius:12px;overflow:hidden;">'
+            f'</iframe>'
         )
 
     def show(self):
