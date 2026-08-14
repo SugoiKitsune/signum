@@ -158,44 +158,222 @@ class StatChart:
             for i in range(len(x_grid))
         ]
 
+    # RdYlGn etc. — ColorBrewer stops, low → high (red → green for RdYlGn).
+    _COLORSCALES = {
+        "RdYlGn":   ["#a50026", "#d73027", "#f46d43", "#fdae61", "#fee08b", "#ffffbf",
+                     "#d9ef8b", "#a6d96a", "#66bd63", "#1a9850", "#006837"],
+        "RdYlBu":   ["#a50026", "#d73027", "#f46d43", "#fdae61", "#fee090", "#ffffbf",
+                     "#e0f3f8", "#abd9e9", "#74add1", "#4575b4", "#313695"],
+        "Spectral": ["#9e0142", "#d53e4f", "#f46d43", "#fdae61", "#fee08b", "#ffffbf",
+                     "#e6f598", "#abdda4", "#66c2a5", "#3288bd", "#5e4fa2"],
+        "viridis":  ["#440154", "#482878", "#3e4a89", "#31688e", "#26828e", "#1f9e89",
+                     "#35b779", "#6ece58", "#b5de2b", "#fde725"],
+    }
+
+    @staticmethod
+    def _lerp_hex(stops: List[str], t: float) -> str:
+        """Linearly interpolate a hex colour at ``t`` ∈ [0, 1] across ``stops``."""
+        t = 0.0 if t < 0 else 1.0 if t > 1 else t
+        pos = t * (len(stops) - 1)
+        i = int(pos)
+        if i >= len(stops) - 1:
+            return stops[-1]
+        frac = pos - i
+        a, b = stops[i], stops[i + 1]
+        ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+        br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+        return "#%02x%02x%02x" % (round(ar + (br - ar) * frac),
+                                  round(ag + (bg - ag) * frac),
+                                  round(ab + (bb - ab) * frac))
+
+    @staticmethod
+    def _fmt_hover(v) -> str:
+        """Compact a hover value — numbers abbreviated, strings verbatim, NaN → em-dash."""
+        if v is None:
+            return "—"
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+        if f != f:
+            return "—"
+        a = abs(f)
+        if a >= 1e6: return f"{f/1e6:.1f}M"
+        if a >= 1e3: return f"{f/1e3:.1f}k"
+        if a >= 100: return f"{f:.0f}"
+        if a >= 10:  return f"{f:.1f}"
+        if a >= 1:   return f"{f:.2f}"
+        return f"{f:.3g}"
+
     def scatter(
         self,
         x,
         y,
         name: Optional[str] = None,
-        color: Optional[str] = None,
-        size: int = 3,
+        color=None,
+        size=6,
+        symbol="circle",
+        outline=None,
+        labels=None,
+        hover: Optional[dict] = None,
+        colorscale="RdYlGn",
+        clim: Optional[tuple] = None,
+        colorbar=None,
+        legend: Optional[List[dict]] = None,
+        curves: Optional[List[dict]] = None,
         x_label: Optional[str] = None,
         y_label: Optional[str] = None,
     ) -> "StatChart":
-        """Add a scatter-plot panel.
+        """Add an x-y **scatter / bubble** panel — value axes on both sides.
+
+        This is Signum's native way to draw a true x-y relationship (a
+        duration×yield map, risk×return, a factor scatter): ``Chart`` is
+        time-axis only, so anything with a numeric x uses ``StatChart`` here.
+
+        Beyond a plain dot cloud it supports a **continuous colour scale** (a
+        numeric ``color`` → colour bar), **per-point size** (a bubble chart),
+        **per-point marker shape**, an **outline** (ring a subset, e.g. your
+        holdings), and a **rich multi-field tooltip** — everything a Plotly
+        scatter gave you, rendered on Signum's own canvas.
 
         Parameters
         ----------
-        x, y : array-like, Series
+        x, y : array-like
             Coordinate arrays (same length).
         name : str, optional
             Panel title.
-        color : str, optional
-            Dot colour (CSS).
-        size : int
-            Dot radius in pixels (default 3).
+        color : str | numeric array | list of CSS str, optional
+            One colour for every dot, OR a **numeric array** mapped through
+            ``colorscale`` (draws a colour bar), OR an explicit per-point CSS
+            list.  Omitted ⇒ next theme colour.
+        size : number | array-like
+            Dot radius in px — a scalar, or per-point for a bubble chart.
+        symbol : str | array-like
+            Marker shape per point — ``'circle'`` (default), ``'diamond'``,
+            ``'square'``, ``'triangle'``, ``'triangle-down'``, ``'cross'``,
+            ``'x'``.  Scalar or per-point.
+        outline : str | array-like, optional
+            Stroke colour around each filled marker (scalar or per-point; a
+            ``None`` entry = no ring).  Handy to highlight a subset.
+        labels : array-like of str, optional
+            Per-point name shown **bold** atop the hover tooltip.
+        hover : dict {field: array-like}, optional
+            Extra tooltip rows, e.g. ``{"G-spread bp": gsp, "rating": rtg}`` —
+            numbers are compacted, strings shown verbatim.
+        colorscale : str | list of hex
+            Palette for a numeric ``color`` — ``'RdYlGn'`` (default),
+            ``'RdYlBu'``, ``'Spectral'``, ``'viridis'``, or an explicit hex list.
+        clim : (lo, hi), optional
+            Colour-scale limits (default = data min/max).
+        colorbar : str | False, optional
+            Colour-bar title.  ``False`` suppresses the bar even for numeric
+            colour.
+        legend : list of dict, optional
+            Marker-shape key — ``[{"symbol": "diamond", "label": "holdings"},
+            …]`` (optional ``"color"`` per entry).
+        curves : list of dict, optional
+            Fitted lines drawn **through** the cloud (term-structure / yield
+            curves) — each ``{"x": [...], "y": [...], "name": ..., "color": ...,
+            "lower": [...], "upper": [...], "dash": bool}``.  ``lower``/``upper``
+            shade a confidence band; ``name`` adds a legend entry.  Curve points
+            are independent of the scatter points and extend the axis range.
         x_label, y_label : str, optional
-            Axis titles.  Also used as the hover-tooltip field names in place of
-            the bare ``x`` / ``y`` (e.g. ``x_label="TTM"`` ⇒ ``TTM: 2.31``).
+            Axis titles.  Also the default x/y hover field names.
         """
         xarr = np.asarray(x, dtype=float)
         yarr = np.asarray(y, dtype=float)
         mask = ~(np.isnan(xarr) | np.isnan(yarr))
         xarr, yarr = xarr[mask], yarr[mask]
+        idx = np.where(mask)[0]
+
+        def _sub(a):
+            """Align an array-like to the valid (finite x,y) mask; None-safe."""
+            if a is None:
+                return None
+            seq = list(a)
+            return [seq[i] for i in idx]
+
+        def _is_scalar(a):
+            return isinstance(a, (str, int, float, np.number)) or a is None
+
+        # ── colour: single / numeric-colourmap / explicit per-point ───────
+        pcolors = None
+        single_color = None
+        cb = None
+        if color is None:
+            single_color = self._next_color()
+        elif isinstance(color, str):
+            single_color = color
+        else:
+            vals = _sub(color)
+            try:
+                nums = [float(v) for v in vals]
+                numeric = True
+            except (TypeError, ValueError):
+                numeric = False
+            if numeric:
+                stops = (list(colorscale) if isinstance(colorscale, (list, tuple))
+                         else self._COLORSCALES.get(colorscale, self._COLORSCALES["RdYlGn"]))
+                finite = [v for v in nums if v == v]
+                lo, hi = (clim if clim else ((min(finite), max(finite)) if finite else (0.0, 1.0)))
+                span = (hi - lo) or 1.0
+                pcolors = [self._lerp_hex(stops, (v - lo) / span) if v == v else "#888888" for v in nums]
+                if colorbar is not False:
+                    cb = {"title": colorbar if isinstance(colorbar, str) else None,
+                          "stops": [[round(i / (len(stops) - 1), 4), stops[i]] for i in range(len(stops))],
+                          "lo": round(float(lo), 6), "hi": round(float(hi), 6)}
+            else:
+                pcolors = [str(v) for v in vals]
+
+        # ── size / symbol / outline: scalar or per-point ──────────────────
+        sizes = None if _is_scalar(size) else [self._safe_float(v) for v in _sub(size)]
+        size_s = float(size) if _is_scalar(size) and size is not None else 6.0
+        symbols = None if _is_scalar(symbol) else [str(v) for v in _sub(symbol)]
+        symbol_s = symbol if isinstance(symbol, str) else "circle"
+        outlines = None if _is_scalar(outline) else [
+            (None if (v is None or (isinstance(v, float) and v != v)) else str(v)) for v in _sub(outline)]
+        outline_s = outline if isinstance(outline, str) else None
+
+        hov = None
+        if hover:
+            hov = [{"t": str(k), "v": [self._fmt_hover(w) for w in _sub(v)]} for k, v in hover.items()]
+
+        def _numlist(a):
+            return None if a is None else [None if (w is None or (isinstance(w, float) and w != w)) else round(float(w), 6) for w in a]
+
+        def _norm_curve(cv):
+            col = str(cv.get("color") or self._next_color())
+            return {"x": [round(float(v), 6) for v in cv["x"]],
+                    "y": _numlist(cv["y"]),
+                    "color": col,
+                    "name": (str(cv["name"]) if cv.get("name") else None),
+                    "dash": bool(cv.get("dash")),
+                    "lower": _numlist(cv.get("lower")),
+                    "upper": _numlist(cv.get("upper")),
+                    "band": cv.get("band") or self._rgba(col, 0.14)}
+        curves_n = [_norm_curve(c) for c in curves] if curves else None
 
         self._panels.append({
             "type": "scatter",
-            "name": name or f"Scatter {len(self._panels) + 1}",
-            "color": color or self._next_color(),
+            "name": (f"Scatter {len(self._panels) + 1}" if name is None else name),
+            "color": single_color or "#2196F3",
+            "pcolors": pcolors,
             "x": [round(float(v), 6) for v in xarr],
             "y": [round(float(v), 6) for v in yarr],
-            "size": size,
+            "size": size_s,
+            "sizes": [s if s is not None else size_s for s in sizes] if sizes is not None else None,
+            "symbol": symbol_s,
+            "symbols": symbols,
+            "outline": outline_s,
+            "outlines": outlines,
+            "plabels": [str(v) for v in _sub(labels)] if labels is not None else None,
+            "hover": hov,
+            "colorbar": cb,
+            "legend": [{"symbol": str(it.get("symbol", "circle")),
+                        "label": str(it.get("label", "")),
+                        "color": (str(it["color"]) if it.get("color") else None)}
+                       for it in legend] if legend else None,
+            "curves": curves_n,
             "x_label": x_label,
             "y_label": y_label,
         })
@@ -871,6 +1049,30 @@ function fmtV(v){{   /* value-label: integers bare (counts), else fmt() */
   return fmt(v);
 }}
 
+/* ── marker shapes (scatter) ───────────────────────────── */
+function pathMarker(ctx,cx,cy,r,sym){{
+  ctx.beginPath();
+  if(sym==="diamond"){{ctx.moveTo(cx,cy-r);ctx.lineTo(cx+r,cy);ctx.lineTo(cx,cy+r);ctx.lineTo(cx-r,cy);ctx.closePath();}}
+  else if(sym==="square"){{ctx.rect(cx-r,cy-r,2*r,2*r);}}
+  else if(sym==="triangle"){{ctx.moveTo(cx,cy-r);ctx.lineTo(cx+r*0.87,cy+r*0.55);ctx.lineTo(cx-r*0.87,cy+r*0.55);ctx.closePath();}}
+  else if(sym==="triangle-down"){{ctx.moveTo(cx,cy+r);ctx.lineTo(cx+r*0.87,cy-r*0.55);ctx.lineTo(cx-r*0.87,cy-r*0.55);ctx.closePath();}}
+  else{{ctx.arc(cx,cy,r,0,Math.PI*2);}}                       /* circle (default) */
+}}
+function lineMarker(ctx,cx,cy,r,sym){{
+  ctx.beginPath();
+  if(sym==="cross"){{ctx.moveTo(cx-r,cy);ctx.lineTo(cx+r,cy);ctx.moveTo(cx,cy-r);ctx.lineTo(cx,cy+r);}}
+  else{{ctx.moveTo(cx-r,cy-r);ctx.lineTo(cx+r,cy+r);ctx.moveTo(cx+r,cy-r);ctx.lineTo(cx-r,cy+r);}}   /* x */
+}}
+function drawPoint(ctx,cx,cy,r,sym,col,ol){{
+  if(sym==="x"||sym==="cross"){{
+    ctx.strokeStyle=col;ctx.lineWidth=Math.max(1.4,r*0.42);ctx.lineCap="round";
+    lineMarker(ctx,cx,cy,r,sym);ctx.stroke();
+  }}else{{
+    ctx.fillStyle=col;pathMarker(ctx,cx,cy,r,sym);ctx.fill();
+    if(ol){{ctx.strokeStyle=ol;ctx.lineWidth=2;ctx.stroke();}}
+  }}
+}}
+
 /* ── tooltip style ──────────────────────────────────────── */
 const TT_BG="{("rgba(30,30,30,0.92)" if dark else "rgba(255,255,255,0.94)")}";
 const TT_FG="{("rgba(255,255,255,0.9)" if dark else "rgba(0,0,0,0.8)")}";
@@ -1026,10 +1228,16 @@ P.forEach(function(p){{
         if(X[i]<_xMin)_xMin=X[i];if(X[i]>_xMax)_xMax=X[i];
         if(Y[i]<_yMin)_yMin=Y[i];if(Y[i]>_yMax)_yMax=Y[i];
       }}
+      if(p.curves){{for(const cv of p.curves){{for(let i=0;i<cv.x.length;i++){{
+        const xv=cv.x[i];if(xv<_xMin)_xMin=xv;if(xv>_xMax)_xMax=xv;
+        const lo=cv.lower?cv.lower[i]:cv.y[i],hi=cv.upper?cv.upper[i]:cv.y[i];
+        if(lo!=null&&lo<_yMin)_yMin=lo;if(hi!=null&&hi>_yMax)_yMax=hi;
+      }}}}}}
       const xP=(_xMax-_xMin)*0.05||1,yP=(_yMax-_yMin)*0.05||1;
       _xMin-=xP;_xMax+=xP;_yMin-=yP;_yMax+=yP;
 
-      _pad={{top:30,right:14,bottom:34,left:52}};
+      const CB=p.colorbar;
+      _pad={{top:30,right:CB?72:14,bottom:34,left:52}};
       _pW=_W-_pad.left-_pad.right;_pH=_H-_pad.top-_pad.bottom;
 
       /* grid */
@@ -1054,10 +1262,71 @@ P.forEach(function(p){{
       ctx.beginPath();ctx.moveTo(_pad.left,_pad.top+_pH);ctx.lineTo(_W-_pad.right,_pad.top+_pH);ctx.stroke();
       ctx.beginPath();ctx.moveTo(_pad.left,_pad.top);ctx.lineTo(_pad.left,_pad.top+_pH);ctx.stroke();
 
-      /* dots */
-      ctx.fillStyle=p.color;
+      /* fitted curves (band + line), drawn under the markers */
+      if(p.curves){{
+        for(const cv of p.curves){{
+          if(cv.lower&&cv.upper){{
+            ctx.fillStyle=cv.band;ctx.beginPath();let s=false;
+            for(let i=0;i<cv.x.length;i++){{if(cv.upper[i]==null)continue;const xx=sx(cv.x[i]),yy=sy(cv.upper[i]);if(!s){{ctx.moveTo(xx,yy);s=true;}}else ctx.lineTo(xx,yy);}}
+            for(let i=cv.x.length-1;i>=0;i--){{if(cv.lower[i]==null)continue;ctx.lineTo(sx(cv.x[i]),sy(cv.lower[i]));}}
+            ctx.closePath();ctx.fill();
+          }}
+          ctx.save();ctx.strokeStyle=cv.color;ctx.lineWidth=2.4;ctx.lineJoin="round";ctx.lineCap="round";
+          if(cv.dash)ctx.setLineDash([6,4]);
+          ctx.beginPath();let st=false;
+          for(let i=0;i<cv.x.length;i++){{if(cv.y[i]==null)continue;const xx=sx(cv.x[i]),yy=sy(cv.y[i]);if(!st){{ctx.moveTo(xx,yy);st=true;}}else ctx.lineTo(xx,yy);}}
+          ctx.stroke();ctx.restore();
+        }}
+      }}
+
+      /* markers (per-point colour / size / shape / outline) */
       for(let i=0;i<X.length;i++){{
-        ctx.beginPath();ctx.arc(sx(X[i]),sy(Y[i]),p.size,0,Math.PI*2);ctx.fill();
+        const col=p.pcolors?p.pcolors[i]:p.color;
+        const r=p.sizes?p.sizes[i]:p.size;
+        const sym=p.symbols?p.symbols[i]:p.symbol;
+        const ol=p.outlines?p.outlines[i]:p.outline;
+        drawPoint(ctx,sx(X[i]),sy(Y[i]),r,sym,col,ol);
+      }}
+
+      /* colour bar */
+      if(CB){{
+        const bw=12,bh=_pH*0.68,bx=_W-_pad.right+18,by=_pad.top+(_pH-bh)/2;
+        const g=ctx.createLinearGradient(0,by+bh,0,by);
+        for(let s=0;s<CB.stops.length;s++)g.addColorStop(CB.stops[s][0],CB.stops[s][1]);
+        ctx.fillStyle=g;ctx.fillRect(bx,by,bw,bh);
+        ctx.strokeStyle=AC;ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,bh);
+        ctx.fillStyle=SC;ctx.font="9px "+FONT;ctx.textAlign="left";ctx.textBaseline="middle";
+        ctx.fillText(fmt(CB.hi),bx+bw+5,by);
+        ctx.fillText(fmt((CB.lo+CB.hi)/2),bx+bw+5,by+bh/2);
+        ctx.fillText(fmt(CB.lo),bx+bw+5,by+bh);
+        if(CB.title){{ctx.save();ctx.fillStyle=TC;ctx.font="10px "+FONT;ctx.textAlign="center";ctx.textBaseline="alphabetic";
+          ctx.translate(bx+bw+40,by+bh/2);ctx.rotate(-Math.PI/2);ctx.fillText(CB.title,0,0);ctx.restore();}}
+      }}
+
+      /* symbol legend (top-left) */
+      if(p.legend&&p.legend.length){{
+        ctx.save();ctx.font="10px "+FONT;ctx.textBaseline="middle";ctx.textAlign="left";
+        let lx=_pad.left+8;const ly=_pad.top+12;
+        for(const it of p.legend){{
+          drawPoint(ctx,lx+5,ly,4.5,it.symbol,it.color||TC,null);
+          ctx.fillStyle=TC;ctx.fillText(it.label,lx+16,ly);
+          lx+=16+ctx.measureText(it.label).width+16;
+        }}
+        ctx.restore();
+      }}
+
+      /* curve legend (line swatches, row below the symbol legend) */
+      if(p.curves&&p.curves.some(function(c){{return c.name;}})){{
+        ctx.save();ctx.font="10px "+FONT;ctx.textBaseline="middle";ctx.textAlign="left";
+        let lx=_pad.left+8;const ly=_pad.top+((p.legend&&p.legend.length)?28:12);
+        for(const cv of p.curves){{
+          if(!cv.name)continue;
+          ctx.strokeStyle=cv.color;ctx.lineWidth=2.4;if(cv.dash)ctx.setLineDash([6,4]);
+          ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(lx+16,ly);ctx.stroke();ctx.setLineDash([]);
+          ctx.fillStyle=TC;ctx.fillText(cv.name,lx+20,ly);
+          lx+=20+ctx.measureText(cv.name).width+14;
+        }}
+        ctx.restore();
       }}
 
       /* axis labels */
@@ -1418,23 +1687,27 @@ P.forEach(function(p){{
         const d=dx*dx+dy*dy;
         if(d<bd){{bd=d;best=i;}}
       }}
-      if(best<0||Math.sqrt(bd)>30){{tip.style.display="none";return;}}
+      if(best<0||Math.sqrt(bd)>34){{tip.style.display="none";return;}}
       const px=sx(X[best]),py=sy(Y[best]);
-      /* ring around nearest dot */
-      oc.save();oc.strokeStyle=p.color;oc.lineWidth=2;
-      oc.beginPath();oc.arc(px,py,p.size+4,0,Math.PI*2);oc.stroke();
-      oc.restore();
-      /* snap crosshair to point */
-      oc.save();oc.strokeStyle=CH_C;oc.lineWidth=1;oc.setLineDash([4,3]);
+      const r=p.sizes?p.sizes[best]:p.size;
+      const col=p.pcolors?p.pcolors[best]:p.color;
+      /* snap crosshair to point, then ring it */
       oc.clearRect(0,0,_W,_H);
+      oc.save();oc.strokeStyle=CH_C;oc.lineWidth=1;oc.setLineDash([4,3]);
       oc.beginPath();oc.moveTo(px,_pad.top);oc.lineTo(px,_pad.top+_pH);oc.stroke();
       oc.beginPath();oc.moveTo(_pad.left,py);oc.lineTo(_W-_pad.right,py);oc.stroke();
       oc.restore();
-      oc.save();oc.strokeStyle=p.color;oc.lineWidth=2;
-      oc.beginPath();oc.arc(px,py,p.size+4,0,Math.PI*2);oc.stroke();
+      oc.save();oc.strokeStyle=col;oc.lineWidth=2;
+      oc.beginPath();oc.arc(px,py,r+5,0,Math.PI*2);oc.stroke();
       oc.restore();
-      tip.innerHTML="<b>"+(p.x_label||"x")+":</b> "+fmt(X[best])
-        +"<br><b>"+(p.y_label||"y")+":</b> "+fmt(Y[best]);
+      let h="";
+      if(p.plabels&&p.plabels[best])h+="<b>"+p.plabels[best]+"</b>";
+      if(p.hover&&p.hover.length){{
+        for(const f of p.hover)h+=(h?"<br>":"")+"<span style='color:"+SC+"'>"+f.t+"</span> "+f.v[best];
+      }}else{{
+        h+=(h?"<br>":"")+"<b>"+(p.x_label||"x")+":</b> "+fmt(X[best])+"<br><b>"+(p.y_label||"y")+":</b> "+fmt(Y[best]);
+      }}
+      tip.innerHTML=h;
     }}
 
     /* ── bars hover (slot + bar/segment under cursor) ───── */

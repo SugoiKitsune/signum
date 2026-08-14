@@ -12,7 +12,8 @@ Public API
                histogram, volume, allocation; plus annotations (price_line,
                hline, marker, signals, shade, watermark). Methods return
                ``self`` for chaining.
-``StatChart``  Statistical panels: distribution (histogram + KDE), scatter,
+``StatChart``  Statistical panels: distribution (histogram + KDE), scatter
+               (colour-mapped bubbles + marker shapes + fitted-curve overlay),
                curve (fitted line + confidence band + date slider), spread.
 ``Dashboard``  Stack multiple ``Chart`` panes with synced crosshair/zoom/scroll.
 ``sfera`` / ``SferaData``  Data helpers.
@@ -70,4 +71,4 @@ __all__ = [
     "THEME_NAMES",
     "resolve_theme",
 ]
-__version__ = "0.40.0"
+__version__ = "0.41.0"
