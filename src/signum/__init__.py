@@ -9,9 +9,10 @@ HTML** — all from the same fluent API.
 Public API
 ----------
 ``Chart``      Price/series charts: candlestick, bar, line, area, baseline,
-               histogram, volume, allocation; plus annotations (price_line,
-               hline, marker, signals, shade, watermark). Methods return
-               ``self`` for chaining.
+               histogram, volume, allocation, seasonality (seasons overlaid on
+               one in-season axis, with a season brush); plus annotations
+               (price_line, hline, marker, signals, shade, watermark). Methods
+               return ``self`` for chaining.
 ``StatChart``  Statistical panels: distribution (histogram + KDE), scatter
                (colour-mapped bubbles + marker shapes + fitted-curve overlay),
                curve (fitted line + confidence band + date slider), spread.

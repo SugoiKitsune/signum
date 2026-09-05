@@ -329,6 +329,7 @@ class Chart:
         self._stats_legend: Optional[Dict[str, Any]] = None
         self._bg_image_config: Optional[Dict] = None
         self._alloc_tooltip: Optional[Dict[str, Any]] = None
+        self._seasonality_config: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -1177,6 +1178,223 @@ class Chart:
         
         return self
 
+    def seasonality(
+        self,
+        df: pd.DataFrame,
+        period: Any = "Y",
+        value_col: Optional[str] = None,
+        mode: str = "percent",
+        average: bool = True,
+        brush: bool = True,
+        seasons: Optional[List[str]] = None,
+        colors: Optional[List[str]] = None,
+        highlight_last: bool = True,
+        average_color: Optional[str] = None,
+    ) -> "Chart":
+        """Overlay every season of a series on one shared in-season axis.
+
+        Each season (calendar year by default) becomes its own line, all of them
+        drawn against the same Jan-Dec axis, so a shape that repeats every year
+        shows up as lines that stack on top of each other.
+
+        Usage::
+
+            Chart(theme="dark", height=460).seasonality(spx["close"]).show()
+
+        Parameters
+        ----------
+        df : DataFrame or Series
+            Time series to split. Needs a time column / DatetimeIndex.
+        period : str or int, default ``"Y"``
+            Season length. ``"Y"`` aligns by calendar date (the axis reads
+            Jan...Dec, the way a seasonality chart should). ``"Q"``, ``"M"``,
+            ``"W"`` and an integer bar count align by *position within the
+            season* instead, and the axis is relabelled ``D1, D2, ...`` - use
+            these when the cycle you are after has no calendar name.
+        mode : ``"percent"`` or ``"value"``, default ``"percent"``
+            ``"percent"`` rebases every season to its own first value = 0%, so
+            seasons sitting at different price levels stay comparable. Pass
+            ``"value"`` for a series that crosses zero (cumulative returns,
+            spreads) - rebasing those is meaningless. Switchable in the chart.
+        average : bool, default True
+            Draw the mean across the *selected* seasons. It is recomputed live
+            as the brush moves, which is what makes the brush worth having.
+        brush : bool, default True
+            Two-handle range control above the chart, selecting which seasons
+            are drawn and which feed the average. Drag it to compare one span
+            of seasons against another - a regime change shows up as the
+            average line moving while you slide the window. Past twelve
+            seasons it opens on the most recent twelve; the rest are one drag
+            away rather than an unreadable thicket on first paint.
+        seasons : list of str, optional
+            Restrict to these season labels (``"2019"``, ``"2019Q1"``, ...).
+        highlight_last : bool, default True
+            Draw the most recent (usually incomplete) season thicker.
+
+        Notes
+        -----
+        Feb 29 is dropped under ``period="Y"``: it has no counterpart in the
+        other seasons, so there is nothing to align it against.
+        """
+        if mode not in ("percent", "value"):
+            raise ValueError("mode must be 'percent' or 'value'")
+
+        if isinstance(df, pd.Series):
+            df = df.to_frame(df.name or "value")
+        d = df.copy()
+        tcol = self._detect_time_col(d)
+        times = pd.to_datetime(d.index if tcol == "__index__" else d[tcol])
+        vcol = self._find_value_col(d, value_col)
+        work = pd.DataFrame({
+            "t": pd.DatetimeIndex(times),
+            "v": pd.to_numeric(d[vcol], errors="coerce").values,
+        }).dropna(subset=["t"]).sort_values("t").reset_index(drop=True)
+        if work.empty:
+            raise ValueError("seasonality(): no dated rows to plot")
+
+        # Split into seasons, and place every row on the shared axis.  Calendar
+        # mode keeps the real month/day so the axis reads Jan-Dec; the ordinal
+        # modes have no calendar meaning, so they map position-in-season onto
+        # consecutive days from the same base and relabel the axis.
+        base = pd.Timestamp("2001-01-01")
+        unit = "D"
+        if isinstance(period, (int, np.integer)) and not isinstance(period, bool):
+            n = int(period)
+            if n < 2:
+                raise ValueError("seasonality(): integer period must be >= 2 bars")
+            ordinal, unit = True, "Bar "
+            idx = np.arange(len(work))
+            work["key"] = idx // n
+            pos = idx % n
+            labels = {k: g["t"].iloc[0].strftime("%Y-%m-%d")
+                      for k, g in work.groupby("key", sort=True)}
+        else:
+            p = str(period).upper()[:1]
+            if p in ("Y", "A"):
+                ordinal = False
+                work = work[~((work["t"].dt.month == 2) & (work["t"].dt.day == 29))]
+                work = work.reset_index(drop=True)
+                work["key"] = work["t"].dt.year
+                pos = None
+                labels = {k: str(k) for k in work["key"].unique()}
+            elif p == "Q":
+                ordinal = True
+                per = work["t"].dt.to_period("Q")
+                work["key"] = per.astype(str)
+                pos = (work["t"] - per.dt.start_time).dt.days.values
+                labels = {k: k for k in work["key"].unique()}
+            elif p == "M":
+                ordinal = True
+                work["key"] = work["t"].dt.strftime("%Y-%m")
+                pos = (work["t"].dt.day - 1).values
+                labels = {k: k for k in work["key"].unique()}
+            elif p == "W":
+                ordinal = True
+                per = work["t"].dt.to_period("W")
+                iso = per.dt.start_time.dt.isocalendar()
+                work["key"] = (iso["year"].astype(str) + "-W"
+                               + iso["week"].astype(int).map("{:02d}".format)).values
+                pos = work["t"].dt.dayofweek.values
+                labels = {k: k for k in work["key"].unique()}
+            else:
+                raise ValueError(
+                    "seasonality(): period must be 'Y', 'Q', 'M', 'W' or an int bar count"
+                )
+
+        if ordinal:
+            work["x"] = (base + pd.to_timedelta(pos, unit="D")).strftime("%Y-%m-%d")
+        else:
+            work["x"] = "2001-" + work["t"].dt.strftime("%m-%d")
+        work = work.drop_duplicates(subset=["key", "x"], keep="last")
+
+        order = work.groupby("key")["t"].min().sort_values().index.tolist()
+        keys = [k for k in order if str(labels[k]) in set(seasons)] if seasons else order
+        if not keys:
+            raise ValueError("seasonality(): no seasons left after filtering")
+
+        grid = sorted(work.loc[work["key"].isin(keys), "x"].unique())
+        gpos = {x: i for i, x in enumerate(grid)}
+
+        pct: List[List[Optional[float]]] = []
+        val: List[List[Optional[float]]] = []
+        for k in keys:
+            g = work[work["key"] == k]
+            row_v: List[Optional[float]] = [None] * len(grid)
+            row_p: List[Optional[float]] = [None] * len(grid)
+            anchor_s = g.loc[g["v"].notna(), "v"]
+            anchor = float(anchor_s.iloc[0]) if len(anchor_s) else float("nan")
+            # A season anchored at zero cannot be rebased - leave it out of
+            # percent mode rather than divide by it.
+            rebasable = anchor == anchor and anchor != 0
+            for x, v in zip(g["x"], g["v"]):
+                if pd.isna(v):
+                    continue
+                i = gpos[x]
+                row_v[i] = float(v)
+                if rebasable:
+                    row_p[i] = (float(v) / anchor - 1.0) * 100.0
+            val.append(row_v)
+            pct.append(row_p)
+
+        season_labels = [str(labels[k]) for k in keys]
+        n_seasons = len(keys)
+        pal = _alloc_colors(n_seasons, list(colors) if colors else _ALLOC_PALETTE)
+
+        src = pct if mode == "percent" else val
+        base_index = len(self._series)
+        for i, lab in enumerate(season_labels):
+            data = [{"time": grid[j], "value": v}
+                    for j, v in enumerate(src[i]) if v is not None]
+            self._series.append({
+                "type": "LineSeries",
+                "data": data,
+                "options": {
+                    "color": pal[i],
+                    "lineWidth": 2 if (highlight_last and i == n_seasons - 1) else 1,
+                    "title": lab,
+                    "priceLineVisible": False,
+                    "lastValueVisible": True,
+                },
+            })
+
+        avg_index = None
+        if average:
+            avg_data = []
+            for j in range(len(grid)):
+                col = [src[i][j] for i in range(n_seasons) if src[i][j] is not None]
+                if col:
+                    avg_data.append({"time": grid[j], "value": sum(col) / len(col)})
+            avg_index = len(self._series)
+            self._series.append({
+                "type": "LineSeries",
+                "data": avg_data,
+                "options": {
+                    "color": average_color or self._theme.get("line", {}).get("color", "#2962FF"),
+                    "lineWidth": 3,
+                    "title": "Avg",
+                    "priceLineVisible": False,
+                    "lastValueVisible": True,
+                },
+            })
+
+        self._seasonality_config = {
+            "grid": grid,
+            "labels": season_labels,
+            "pct": pct,
+            "val": val,
+            "mode": mode,
+            "average_on": bool(average),
+            "ordinal": bool(ordinal),
+            "unit": unit,
+            # Past a dozen seasons the overlay stops being readable, so the
+            # brush opens on the most recent ones.  The rest are one drag away.
+            "sel": [max(0, n_seasons - 12), n_seasons - 1],
+            "base_index": base_index,
+            "avg_index": avg_index,
+            "brush": bool(brush) and n_seasons > 1,
+        }
+        return self
+
     def forecast(
         self,
         pred_df: pd.DataFrame,
@@ -1596,7 +1814,12 @@ class Chart:
     def _get_formatter_js(self) -> str:
         """Return raw JS function literal for price formatting, or empty string."""
         if not self._y_format:
-            return ""
+            # DEFAULT: trim trailing zeros (200.00 -> 200, 100.10 -> 100.1) and thousand-separate large
+            # values, instead of the charting lib's fixed 2-decimal default that printed "0.00" on every
+            # axis. Real (non-zero) decimals are kept; only the all-zero tail is dropped.
+            return ("function(p){var a=Math.abs(p);"
+                    "if(a>=1000)return Math.round(p).toLocaleString('en-US');"
+                    "var v=Math.round(p*100)/100;return ''+v;}")
         if self._y_format == "kmb":
             return (
                 "function(p){var a=Math.abs(p);"
@@ -1607,6 +1830,11 @@ class Chart:
             )
         if self._y_format == "percent":
             return "function(p){return p.toFixed(1)+'%';}"
+        if self._y_format == "num":
+            # thousand-separated integers for |v|>=1000; trimmed (no trailing-zero) decimals otherwise
+            return ("function(p){var a=Math.abs(p);"
+                    "if(a>=1000)return Math.round(p).toLocaleString('en-US');"
+                    "var v=Math.round(p*100)/100;return ''+v;}")
         return ""
 
     @staticmethod
@@ -1740,6 +1968,251 @@ class Chart:
                 )
 
         return "\n        ".join(lines)
+
+    # ── Seasonality overlay ───────────────────────────────────────────────
+
+    _SEASONALITY_JS = r"""
+    // ── Seasonality: season selection, average, percent/value swap ─────
+    (function(){
+      const CFG = __CFG__;
+      const SER = [__SERIES__];
+      const AVG = __AVG__;
+      const N   = SER.length;
+      let lo = CFG.sel[0], hi = CFG.sel[1];
+      let mode = CFG.mode;
+      let avgOn = CFG.average_on;
+
+      const PCT_FMT = function(p){ return p.toFixed(1) + '%'; };
+      const VAL_FMT = __VALFMT__;
+      const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const BASE = Date.UTC(2001, 0, 1);
+
+      // LC hands time back as a string, a BusinessDay or a UTC stamp depending
+      // on how the series was fed - normalise all three.
+      function _tp(t){
+        if (typeof t === 'string'){ const a = t.split('-'); return {y:+a[0], m:+a[1], d:+a[2]}; }
+        if (t && t.year !== undefined) return {y:t.year, m:t.month, d:t.day};
+        const dd = new Date(t * 1000);
+        return {y:dd.getUTCFullYear(), m:dd.getUTCMonth()+1, d:dd.getUTCDate()};
+      }
+      function _off(t){ const p = _tp(t); return Math.round((Date.UTC(p.y, p.m-1, p.d) - BASE) / 86400000); }
+
+      // The x axis is synthetic: year 2001 is a carrier, never a real date.
+      const TICK_FMT = CFG.ordinal
+        ? function(t){ return CFG.unit + (_off(t) + 1); }
+        : function(t, tt){ const p = _tp(t); return (tt <= 1) ? MON[p.m-1] : (p.d + ' ' + MON[p.m-1]); };
+      const TIME_FMT = CFG.ordinal
+        ? function(t){ return CFG.unit + (_off(t) + 1); }
+        : function(t){ const p = _tp(t); return p.d + ' ' + MON[p.m-1]; };
+
+      function _src(i){ return (mode === 'percent') ? CFG.pct[i] : CFG.val[i]; }
+      function _rows(i){
+        const s = _src(i), out = [];
+        for (let k = 0; k < CFG.grid.length; k++){
+          const v = s[k];
+          if (v !== null && v !== undefined) out.push({time: CFG.grid[k], value: v});
+        }
+        return out;
+      }
+      function _avgRows(){
+        const out = [];
+        for (let k = 0; k < CFG.grid.length; k++){
+          let sum = 0, c = 0;
+          for (let i = lo; i <= hi; i++){
+            const v = _src(i)[k];
+            if (v !== null && v !== undefined){ sum += v; c++; }
+          }
+          if (c > 0) out.push({time: CFG.grid[k], value: sum / c});
+        }
+        return out;
+      }
+      function _applyFmt(){
+        chart.applyOptions({
+          localization: { priceFormatter: (mode === 'percent') ? PCT_FMT : VAL_FMT, timeFormatter: TIME_FMT },
+          timeScale: { tickMarkFormatter: TICK_FMT }
+        });
+      }
+      // Brush moves only toggle visibility - the data itself is unchanged, so
+      // there is no reason to push it again on every pointermove.
+      function _applySel(){
+        for (let i = 0; i < N; i++) SER[i].applyOptions({ visible: (i >= lo && i <= hi) });
+        if (AVG) AVG.setData(_avgRows());
+      }
+      function _applyMode(){
+        for (let i = 0; i < N; i++) SER[i].setData(_rows(i));
+        if (AVG) AVG.setData(_avgRows());
+        _applyFmt();
+      }
+
+      const track = document.getElementById('sb-track');
+      function _pc(i){ return N > 1 ? (i / (N - 1)) * 100 : 0; }
+      function _paint(){
+        if (!track) return;
+        const h0 = document.getElementById('sb-h0'), h1 = document.getElementById('sb-h1');
+        const fill = document.getElementById('sb-fill');
+        h0.style.left = _pc(lo) + '%';
+        h1.style.left = _pc(hi) + '%';
+        fill.style.left = _pc(lo) + '%';
+        fill.style.width = (_pc(hi) - _pc(lo)) + '%';
+      }
+      function _at(e){
+        const r = track.getBoundingClientRect();
+        let f = (e.clientX - r.left) / Math.max(1, r.width);
+        f = Math.min(1, Math.max(0, f));
+        return Math.round(f * (N - 1));
+      }
+      function _grab(el, which){
+        el.addEventListener('pointerdown', function(e){
+          e.preventDefault();
+          e.stopPropagation();
+          try { el.setPointerCapture(e.pointerId); } catch (err) {}
+          const move = function(ev){
+            const i = _at(ev);
+            if (which === 0) lo = Math.min(i, hi); else hi = Math.max(i, lo);
+            _paint(); _applySel();
+          };
+          const up = function(){
+            el.removeEventListener('pointermove', move);
+            el.removeEventListener('pointerup', up);
+            el.removeEventListener('pointercancel', up);
+          };
+          el.addEventListener('pointermove', move);
+          el.addEventListener('pointerup', up);
+          el.addEventListener('pointercancel', up);
+        });
+      }
+      if (track){
+        _grab(document.getElementById('sb-h0'), 0);
+        _grab(document.getElementById('sb-h1'), 1);
+        // Clicking the bare track jumps whichever handle is nearer.
+        track.addEventListener('pointerdown', function(e){
+          const i = _at(e);
+          if (Math.abs(i - lo) <= Math.abs(i - hi)) lo = Math.min(i, hi); else hi = Math.max(i, lo);
+          _paint(); _applySel();
+        });
+      }
+
+      const modeSel = document.getElementById('sb-mode');
+      if (modeSel){
+        modeSel.value = mode;
+        modeSel.addEventListener('change', function(){ mode = this.value; _applyMode(); });
+      }
+      const avgBtn = document.getElementById('sb-avg');
+      if (avgBtn && AVG){
+        const _paintAvg = function(){
+          avgBtn.style.opacity = avgOn ? '1' : '0.42';
+          AVG.applyOptions({ visible: avgOn });
+        };
+        avgBtn.addEventListener('click', function(){ avgOn = !avgOn; _paintAvg(); });
+        _paintAvg();
+      }
+
+      _paint();
+      _applySel();   // the initial window may be narrower than the data
+      _applyFmt();
+    })();
+"""
+
+    def _build_seasonality(self, is_dark: bool):
+        """Return (html, js, extra_height) for the season brush + controls."""
+        cfg = self._seasonality_config
+        if not cfg:
+            return "", "", 0
+
+        fg = "rgba(255,255,255,0.88)" if is_dark else "rgba(0,0,0,0.78)"
+        dim = "rgba(255,255,255,0.45)" if is_dark else "rgba(0,0,0,0.40)"
+        br = "rgba(255,255,255,0.16)" if is_dark else "rgba(0,0,0,0.14)"
+        panel = "rgba(255,255,255,0.06)" if is_dark else "rgba(0,0,0,0.05)"
+        rail = "rgba(255,255,255,0.14)" if is_dark else "rgba(0,0,0,0.12)"
+        knob = "#e8e8ec" if is_dark else "#1e1e22"
+        mono = "font:11px/1 'SF Mono','Consolas',monospace"
+
+        labels = cfg["labels"]
+        n = len(labels)
+        has_avg = cfg["avg_index"] is not None
+        # A native <select> paints its dropdown in its own background colour, so
+        # a translucent one leaves the options unreadable - use the canvas colour.
+        solid = (self._theme.get("chart", {}).get("layout", {})
+                 .get("background", {}).get("color", ""))
+        if not solid.startswith("#"):
+            solid = "#1e1e1e" if is_dark else "#ffffff"
+
+        # ── Controls ──────────────────────────────────────────────────────
+        # These sat in a row of their own and read as bolted on above the chart.
+        # Right-aligned onto the brush row they cost no height at all, and the
+        # season range is legible from the handles without a readout beside it.
+        pill = (f"border:1px solid {br};border-radius:5px;color:{fg};{mono};"
+                f"padding:4px 7px;outline:none;cursor:pointer")
+        ctl = '<div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">'
+        if has_avg:
+            ctl += (
+                f'<button id="sb-avg" title="Mean across the selected seasons" '
+                f'style="{pill};background:{panel}">Average</button>'
+            )
+        ctl += (
+            f'<select id="sb-mode" title="Y-axis scale" style="{pill};background:{solid}">'
+            f'<option value="percent">Percent</option>'
+            f'<option value="value">Absolute</option>'
+            f'</select></div>'
+        )
+
+        # ── Season brush ──────────────────────────────────────────────────
+        brush = ""
+        extra = 34
+        if cfg["brush"]:
+            extra = 44
+            step = 1 if n <= 12 else max(1, -(-n // 10))
+            shown = sorted(set(list(range(0, n, step)) + [n - 1]))
+            ticks = "".join(
+                f'<span style="position:absolute;left:{(i / (n - 1)) * 100:.4f}%;'
+                f'transform:translateX(-50%);color:{dim};{mono};'
+                f'white-space:nowrap;pointer-events:none">{html_module.escape(labels[i])}</span>'
+                for i in shown
+            )
+            knob_css = (
+                f"position:absolute;top:50%;width:13px;height:13px;margin:-7px 0 0 -7px;"
+                f"border-radius:50%;background:{knob};border:1px solid {br};"
+                f"box-shadow:0 1px 3px rgba(0,0,0,0.35);cursor:ew-resize;touch-action:none;z-index:2"
+            )
+            brush = (
+                # 9px of side padding so a handle parked at either end is not
+                # clipped by the row it sits in.
+                f'<div style="flex:1;min-width:0;position:relative;padding:0 9px">'
+                f'<div style="position:relative;height:14px">{ticks}</div>'
+                f'<div id="sb-track" style="position:relative;height:20px;cursor:pointer;'
+                f'touch-action:none">'
+                f'<div style="position:absolute;top:50%;left:0;right:0;height:4px;'
+                f'margin-top:-2px;border-radius:2px;background:{rail}"></div>'
+                f'<div id="sb-fill" style="position:absolute;top:50%;height:4px;'
+                f'margin-top:-2px;border-radius:2px;background:{fg}"></div>'
+                f'<div id="sb-h0" style="{knob_css}"></div>'
+                f'<div id="sb-h1" style="{knob_css}"></div>'
+                f'</div></div>'
+            )
+
+        html = (
+            f'<div id="sb-wrap" style="position:relative;z-index:6;height:{extra}px;'
+            f'display:flex;align-items:center;justify-content:flex-end;gap:12px;'
+            f'padding:0 12px">{brush}{ctl}</div>'
+        )
+
+        b, avg_i = cfg["base_index"], cfg["avg_index"]
+        series_vars = ",".join(f"s{b + i}" for i in range(n))
+        val_fmt = self._get_formatter_js() or (
+            "function(p){var a=Math.abs(p);"
+            "if(a>=1000)return Math.round(p).toLocaleString('en-US');"
+            "return ''+(Math.round(p*100)/100);}"
+        )
+        payload = {k: cfg[k] for k in
+                   ("grid", "labels", "pct", "val", "mode", "average_on", "ordinal", "unit", "sel")}
+        js = (
+            self._SEASONALITY_JS
+            .replace("__CFG__", self._json(payload))
+            .replace("__SERIES__", series_vars)
+            .replace("__AVG__", f"s{avg_i}" if avg_i is not None else "null")
+            .replace("__VALFMT__", val_fmt)
+        )
+        return html, js, extra
 
     def _build_html(self) -> str:
         chart_opts = self._json(self._build_chart_options())
@@ -2125,7 +2598,9 @@ class Chart:
                     "",
                 ])
 
-        total_extra = slider_extra_height + smoothing_extra_height
+        season_html, season_js, season_extra = self._build_seasonality(is_dark_bg)
+
+        total_extra = slider_extra_height + smoothing_extra_height + season_extra
         self._slider_extra_height = total_extra
 
         _resize_js = """
@@ -2196,7 +2671,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 #signum-logo{{position:absolute;right:12px;bottom:4px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
-{bg_svg}{_glass_open}<div id="fc"></div>
+{bg_svg}{_glass_open}{season_html}<div id="fc"></div>
 {_kmb_overlay}
 {stats_html}
 {alloc_tooltip_html}
@@ -2210,6 +2685,7 @@ try {{
     {series_js}
     {_resize_js}
     {_yscale_js}
+    {season_js}
     {slider_js}
     {smoothing_js}
     {alloc_tooltip_js}

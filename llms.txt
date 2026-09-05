@@ -75,6 +75,18 @@ A misspelled theme raises `ValueError` listing valid names (via
         #   used, so 25 or 50 holdings never share a colour
         # color_map={"AAPL": "#3987e5"} pins a name to a colour; without it a
         #   colour tracks position, so a dropped holding repaints the ones below
+    .seasonality(df, period="Y", value_col=None, mode="percent", average=True,
+                 brush=True, seasons=None, colors=None, highlight_last=True,
+                 average_color=None)
+        # every season of one series overlaid on a shared in-season axis
+        # period: "Y" aligns by calendar date (axis reads Jan…Dec); "Q"/"M"/"W"
+        #   or an int bar count align by position-in-season (axis reads D1, D2…)
+        # mode="percent" rebases each season to its own first value = 0%;
+        #   "value" leaves it raw — use it for series that cross zero
+        # average=True draws the mean of the *selected* seasons, live-recomputed
+        # brush=True adds a two-handle season range above the chart; drag it and
+        #   the average moves — that is the regime read. Opens on the last 12.
+        # in-chart: Percent/Absolute switch, Average toggle
 
 `line=True` / `tag=True` add a crosshair-following dashed line / right-axis
 value label (Dashboard only).
