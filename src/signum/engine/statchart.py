@@ -1022,6 +1022,7 @@ const grid=document.getElementById("grid");
 const SLIDER={slider_meta};
 let AF=SLIDER?SLIDER.init:0;        /* active frame index */
 const REDRAW=[];                    /* per-panel redraw fns, fired on slider move */
+const XLINK={{x:null}};             /* shared x zoom for curve+spread, which share the grid */
 const TC="{text_color}",SC="{sub_color}",GC="{grid_color}",
       AC="{axis_color}",RC="{ref_color}";
 const FONT="{font}";
@@ -1475,6 +1476,8 @@ P.forEach(function(p){{
       if(!isFinite(_yMin)){{_yMin=0;_yMax=1;}}
       const yP=(_yMax-_yMin)*0.10||1,xP=(_xMax-_xMin)*0.03||0.5;
       _xMax+=xP;_yMin-=yP;_yMax+=yP;
+      if(XLINK.x){{_xMin=XLINK.x[0];_xMax=XLINK.x[1];}}
+      if(VIEW){{_yMin=VIEW.y0;_yMax=VIEW.y1;}}
 
       _pad={{top:32,right:16,bottom:40,left:56}};
       _pW=_W-_pad.left-_pad.right;_pH=_H-_pad.top-_pad.bottom;
@@ -1503,6 +1506,7 @@ P.forEach(function(p){{
         for(let i=0;i<GX.length;i++){{if(Y[i]==null)continue;const X=sx(GX[i]),yy=sy(Y[i]);if(!s){{ctx.moveTo(X,yy);s=true;}}else ctx.lineTo(X,yy);}}
         ctx.stroke();ctx.restore();}}
 
+      ctx.save();ctx.beginPath();ctx.rect(_pad.left,_pad.top,_pW,_pH);ctx.clip();   /* zoomed views leave data outside */
       /* confidence band (fill between lower & upper) */
       if(lower&&upper){{
         ctx.fillStyle=p.band_color;ctx.beginPath();let s=false;
@@ -1557,6 +1561,7 @@ P.forEach(function(p){{
         drawSide(T.long,LONG_C,true);
         drawSide(T.short,SHORT_C,false);
       }}
+      ctx.restore();
 
       /* axis labels */
       ctx.fillStyle=SC;ctx.font="10px "+FONT;
@@ -1606,6 +1611,8 @@ P.forEach(function(p){{
       _xMin=Infinity;_xMax=-Infinity;let m=1e-9;
       for(let i=0;i<GX.length;i++){{if(GX[i]<_xMin)_xMin=GX[i];if(GX[i]>_xMax)_xMax=GX[i];const v=YV[i];if(v!=null&&Math.abs(v)>m)m=Math.abs(v);}}
       const xP=(_xMax-_xMin)*0.03||0.5;_xMax+=xP;_yMin=-m*1.25;_yMax=m*1.25;
+      if(XLINK.x){{_xMin=XLINK.x[0];_xMax=XLINK.x[1];}}
+      if(VIEW){{_yMin=VIEW.y0;_yMax=VIEW.y1;}}
 
       _pad={{top:30,right:16,bottom:40,left:56}};
       _pW=_W-_pad.left-_pad.right;_pH=_H-_pad.top-_pad.bottom;
@@ -1619,6 +1626,7 @@ P.forEach(function(p){{
       for(let xv=Math.ceil(_xMin/xS)*xS;xv<=_xMax;xv+=xS){{const x=sx(xv);ctx.beginPath();ctx.moveTo(x,_pad.top);ctx.lineTo(x,_pad.top+_pH);ctx.stroke();ctx.fillText(fmt(xv),x,_pad.top+_pH+6);}}
 
       const y0=sy(0);
+      ctx.save();ctx.beginPath();ctx.rect(_pad.left,_pad.top,_pW,_pH);ctx.clip();
       /* fill between spread and zero */
       const pts=[];for(let i=0;i<GX.length;i++){{if(YV[i]!=null)pts.push([sx(GX[i]),sy(YV[i])]);}}
       if(pts.length){{ctx.save();ctx.globalAlpha=0.16;ctx.fillStyle=p.color;ctx.beginPath();
@@ -1632,6 +1640,7 @@ P.forEach(function(p){{
       ctx.strokeStyle=p.color;ctx.lineWidth=2.2;ctx.lineJoin="round";ctx.lineCap="round";ctx.beginPath();let s2=false;
       for(let i=0;i<GX.length;i++){{if(YV[i]==null)continue;const X=sx(GX[i]),yy=sy(YV[i]);if(!s2){{ctx.moveTo(X,yy);s2=true;}}else ctx.lineTo(X,yy);}}
       ctx.stroke();
+      ctx.restore();
 
       ctx.fillStyle=SC;ctx.font="10px "+FONT;
       if(p.x_label){{ctx.textAlign="center";ctx.textBaseline="bottom";ctx.fillText(p.x_label,_pad.left+_pW/2,_H-4);}}
@@ -1813,10 +1822,17 @@ P.forEach(function(p){{
      both axes about the cursor; wheel over an axis strip zooms that axis
      alone; drag in the plot pans; drag along an axis stretches it;
      double-click resets to the data. ── */
-  if(p.type==="scatter"){{
+  const ZOOM=(p.type==="scatter"||p.type==="curve"||p.type==="spread");
+  const LINKED=(p.type!=="scatter");   /* curve+spread share one x view */
+  if(ZOOM){{
     const inPlot=(x,y)=>x>=_pad.left&&x<=_pad.left+_pW&&y>=_pad.top&&y<=_pad.top+_pH;
     const zone=(x,y)=>inPlot(x,y)?"plot":(y>_pad.top+_pH&&x>=_pad.left?"x":(x<_pad.left&&y<=_pad.top+_pH?"y":""));
-    const cur=()=>VIEW||{{x0:_xMin,x1:_xMax,y0:_yMin,y1:_yMax}};
+    const cur=()=>({{x0:_xMin,x1:_xMax,y0:_yMin,y1:_yMax}});   /* what is on screen now */
+    const apply=(v,touchX)=>{{
+      if(LINKED){{ VIEW={{y0:v.y0,y1:v.y1}}; if(touchX){{XLINK.x=[v.x0,v.x1];REDRAW.forEach(function(f){{f();}});return;}} }}
+      else VIEW=v;
+      draw();
+    }};
     const dx=px=>_xMin+(px-_pad.left)/_pW*(_xMax-_xMin);
     const dy=py=>_yMax-(py-_pad.top)/_pH*(_yMax-_yMin);
     const scale=(v,fx,fy,ax,ay)=>({{x0:ax+(v.x0-ax)*fx,x1:ax+(v.x1-ax)*fx,y0:ay+(v.y0-ay)*fy,y1:ay+(v.y1-ay)*fy}});
@@ -1825,8 +1841,7 @@ P.forEach(function(p){{
       if(!_pad)return;const [x,y]=pos(e);const z=zone(x,y);if(!z)return;
       e.preventDefault();
       const f=e.deltaY>0?1.12:1/1.12;
-      VIEW=scale(cur(),z==="y"?1:f,z==="x"?1:f,dx(x),dy(y));
-      draw();
+      apply(scale(cur(),z==="y"?1:f,z==="x"?1:f,dx(x),dy(y)),z!=="y");
     }},{{passive:false}});
     let drag=null;
     hit.addEventListener("pointerdown",function(e){{
@@ -1841,18 +1856,17 @@ P.forEach(function(p){{
       const v=drag.v;
       if(drag.z==="plot"){{
         const mx=(x-drag.x)*(v.x1-v.x0)/_pW,my=(y-drag.y)*(v.y1-v.y0)/_pH;
-        VIEW={{x0:v.x0-mx,x1:v.x1-mx,y0:v.y0+my,y1:v.y1+my}};
+        apply({{x0:v.x0-mx,x1:v.x1-mx,y0:v.y0+my,y1:v.y1+my}},true);
       }}else if(drag.z==="x"){{
-        VIEW=scale(v,Math.exp(-(x-drag.x)/200),1,(v.x0+v.x1)/2,0);
+        apply(scale(v,Math.exp(-(x-drag.x)/200),1,(v.x0+v.x1)/2,0),true);
       }}else{{
-        VIEW=scale(v,1,Math.exp((y-drag.y)/200),0,(v.y0+v.y1)/2);
+        apply(scale(v,1,Math.exp((y-drag.y)/200),0,(v.y0+v.y1)/2),false);
       }}
-      draw();
     }});
     const endDrag=function(){{drag=null;}};
     hit.addEventListener("pointerup",endDrag);
     hit.addEventListener("pointercancel",endDrag);
-    hit.addEventListener("dblclick",function(){{VIEW=null;draw();}});
+    hit.addEventListener("dblclick",function(){{VIEW=null;if(LINKED){{XLINK.x=null;REDRAW.forEach(function(f){{f();}});}}else draw();}});
   }}
 }});
 
