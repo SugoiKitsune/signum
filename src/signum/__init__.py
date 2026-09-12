@@ -10,9 +10,10 @@ Public API
 ----------
 ``Chart``      Price/series charts: candlestick, bar, line, area, baseline,
                histogram, volume, allocation, seasonality (seasons overlaid on
-               one in-season axis, with a season brush); plus annotations
-               (price_line, hline, marker, signals, shade, watermark). Methods
-               return ``self`` for chaining.
+               one in-season axis, with a season brush), projection_cone
+               (bootstrap cone past an embargo, realized path over it, live
+               embargo slider); plus annotations (price_line, hline, marker,
+               signals, shade, watermark). Methods return ``self`` for chaining.
 ``StatChart``  Statistical panels: distribution (histogram + KDE), scatter
                (colour-mapped bubbles + marker shapes + fitted-curve overlay),
                curve (fitted line + confidence band + date slider), spread.

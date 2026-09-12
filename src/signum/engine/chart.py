@@ -330,6 +330,7 @@ class Chart:
         self._bg_image_config: Optional[Dict] = None
         self._alloc_tooltip: Optional[Dict[str, Any]] = None
         self._seasonality_config: Optional[Dict[str, Any]] = None
+        self._cone_config: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -864,6 +865,7 @@ class Chart:
             "price_scale": {
                 "id": "_shade",
                 "scaleMargins": {"top": 0, "bottom": 0},
+                "pin": (0, 1),
             },
         })
         return self
@@ -1340,6 +1342,9 @@ class Chart:
         n_seasons = len(keys)
         pal = _alloc_colors(n_seasons, list(colors) if colors else _ALLOC_PALETTE)
 
+        # The right-axis badges are off: eleven "year value" tags stacked down
+        # the price scale hide the lines they label, and a colour key does the
+        # same job without touching the plot.
         src = pct if mode == "percent" else val
         base_index = len(self._series)
         for i, lab in enumerate(season_labels):
@@ -1353,17 +1358,33 @@ class Chart:
                     "lineWidth": 2 if (highlight_last and i == n_seasons - 1) else 1,
                     "title": lab,
                     "priceLineVisible": False,
-                    "lastValueVisible": True,
+                    "lastValueVisible": False,
                 },
             })
+
+        # First/last grid index each season covers.  The mean carries a season's
+        # last value forward inside that span: a calendar day is a weekday in
+        # some years and a weekend in others, so without it the set of seasons
+        # contributing flips from day to day and the average saws up and down.
+        spans = []
+        for i in range(n_seasons):
+            got = [j for j, v in enumerate(val[i]) if v is not None]
+            spans.append([got[0], got[-1]] if got else [-1, -1])
 
         avg_index = None
         if average:
             avg_data = []
+            last: List[Optional[float]] = [None] * n_seasons
             for j in range(len(grid)):
-                col = [src[i][j] for i in range(n_seasons) if src[i][j] is not None]
-                if col:
-                    avg_data.append({"time": grid[j], "value": sum(col) / len(col)})
+                total, count = 0.0, 0
+                for i in range(n_seasons):
+                    if src[i][j] is not None:
+                        last[i] = src[i][j]
+                    if last[i] is not None and spans[i][0] <= j <= spans[i][1]:
+                        total += last[i]
+                        count += 1
+                if count:
+                    avg_data.append({"time": grid[j], "value": total / count})
             avg_index = len(self._series)
             self._series.append({
                 "type": "LineSeries",
@@ -1373,13 +1394,15 @@ class Chart:
                     "lineWidth": 3,
                     "title": "Avg",
                     "priceLineVisible": False,
-                    "lastValueVisible": True,
+                    "lastValueVisible": False,
                 },
             })
 
         self._seasonality_config = {
             "grid": grid,
             "labels": season_labels,
+            "colors": pal,
+            "spans": spans,
             "pct": pct,
             "val": val,
             "mode": mode,
@@ -1548,6 +1571,7 @@ class Chart:
                 "price_scale": {
                     "id": "_fc_shade",
                     "scaleMargins": {"top": 0, "bottom": 0},
+                    "pin": (0, 1),
                 },
             })
 
@@ -1590,6 +1614,212 @@ class Chart:
                 "options": path_opts,
             })
 
+        return self
+
+    def projection_cone(
+        self,
+        equity,
+        embargo,
+        value_col: Optional[str] = None,
+        paths: int = 2000,
+        block: int = 20,
+        horizon: Optional[int] = None,
+        ruin: float = 0.2,
+        theoretical=None,
+        realized: bool = True,
+        slider: bool = True,
+        seed: int = 42,
+        color: Optional[str] = None,
+        realized_color: Optional[str] = None,
+        theoretical_color: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> "Chart":
+        """Project an equity curve past an embargo date and overlay what really happened.
+
+        Everything before the embargo is the record; a block bootstrap of those
+        returns says what the future *should* look like if the record holds,
+        drawn as a cone (5–95% and 25–75% bands around the median).  The curve
+        after the embargo is then drawn over the cone, rebased to 100 at the
+        embargo, so you see at a glance whether the live period sits where the
+        record said it would.
+
+        Usage::
+
+            Chart(theme="light", height=420).projection_cone(nav, embargo="2026-05-19")
+
+        Drag the embargo slider under the chart and the cone re-bootstraps
+        live: pull it back a year and you can see whether the strategy stayed
+        inside its own cone through the past — a walk-forward test in one drag.
+
+        Parameters
+        ----------
+        equity : Series or DataFrame
+            NAV / equity curve with a time column or DatetimeIndex.
+        embargo : str, Timestamp, int or float
+            Where the record ends.  A date, a bar index (negative counts from
+            the end) or a fraction of the series in (0, 1).
+        paths, block : int
+            Bootstrap size and block length in bars.  Blocks keep short-run
+            autocorrelation that iid resampling would destroy.
+        horizon : int, optional
+            Bars to project.  Default: every bar available after the embargo,
+            so the cone ends where the data ends.  Pass a number to project
+            beyond the last bar (dates are extended by business days).
+        ruin : float
+            Drawdown from the embargo level that counts as ruin, e.g. ``0.2``.
+            ``P(ruin)`` in the header is the share of paths that ever touch it.
+        theoretical : Series, optional
+            A second post-embargo curve (a model's own expectation, a no-cost
+            version) drawn dashed for comparison, rebased the same way.
+        realized : bool
+            Initial state of the in-chart ``Realized`` toggle.  ``False`` opens
+            blind: nothing after the embargo is drawn (the theoretical line
+            included), only the cone, until you click to reveal.
+        slider : bool
+            Embargo slider under the chart.
+        seed : int
+            Fixed, so the cone is the same on every render and does not
+            shimmer while the slider moves.
+        color, realized_color : str, optional
+            Record + cone colour, and the realized path colour.  Default: the
+            theme's first and second line colours.
+        label : str, optional
+            Strategy name, shown as the first entry of the key.
+
+        Notes
+        -----
+        The chart is self-contained: the bootstrap runs in the page, not in
+        Python, which is what lets the embargo move without a callback.
+        """
+        if not (0 < ruin < 1):
+            raise ValueError("ruin must be a drawdown fraction in (0, 1)")
+        if paths < 100 or block < 1:
+            raise ValueError("paths must be >= 100 and block >= 1")
+
+        df = self._prepare_time(equity)
+        vcol = self._find_value_col(df, value_col)
+        eq = pd.to_numeric(df[vcol], errors="coerce")
+        keep = eq.notna() & (eq > 0)
+        w = (pd.DataFrame({"time": df.loc[keep, "time"], "v": eq[keep].astype(float)})
+             .sort_values("time").drop_duplicates("time", keep="last"))
+        times = w["time"].tolist()
+        vals = w["v"].tolist()
+        n = len(vals)
+        e_min = max(3 * block, 30)
+        if n < e_min + 2:
+            raise ValueError(f"projection_cone(): need at least {e_min + 2} bars, got {n}")
+        e_max = n - 2
+
+        # ── Resolve the embargo to a bar index ────────────────────────────
+        if isinstance(embargo, bool):
+            raise TypeError("embargo must be a date, a bar index or a fraction")
+        if isinstance(embargo, (int, np.integer)):
+            e0 = int(embargo) if embargo >= 0 else n + int(embargo)
+        elif isinstance(embargo, float):
+            if not (0 < embargo < 1):
+                raise ValueError("a float embargo is a fraction of the series in (0, 1)")
+            e0 = int(round(n * embargo))
+        else:
+            key = pd.Timestamp(embargo).strftime("%Y-%m-%d")
+            e0 = int(np.searchsorted(np.array(times), key))
+        if not (e_min <= e0 <= e_max):
+            raise ValueError(
+                f"embargo resolves to bar {e0}; it must be within [{e_min}, {e_max}] "
+                f"({times[e_min]} … {times[e_max]}) so there is a record to bootstrap "
+                f"from and at least one bar after it"
+            )
+
+        # ── Optional second curve, aligned on the same dates ──────────────
+        theo = None
+        if theoretical is not None:
+            td = self._prepare_time(theoretical)
+            tcol = self._find_value_col(td, None)
+            look = dict(zip(td["time"], pd.to_numeric(td[tcol], errors="coerce")))
+            theo = [None if (t not in look or pd.isna(look[t]) or look[t] <= 0)
+                    else float(look[t]) for t in times]
+
+        # A fixed horizon may run past the data; extend the axis so it can.
+        times_ext = list(times)
+        if horizon:
+            ext = pd.bdate_range(pd.Timestamp(times[-1]) + pd.Timedelta("1D"), periods=int(horizon))
+            times_ext += [d.strftime("%Y-%m-%d") for d in ext]
+
+        # Colours come off the theme's line palette in order, the way line()
+        # picks them: the record and its cone share the first (the cone is the
+        # record continued), the realized path takes the second so it reads
+        # against the cone in whatever palette the theme has.
+        is_dark = self._theme_name in ("dark", "midnight", "glass")
+        primary = color or self._next_line_color()
+        second = realized_color or self._next_line_color()
+        colors = {
+            "pre": primary,
+            "median": primary,
+            "band": primary,
+            "realized": second,
+            "theo": theoretical_color or ("rgba(255,255,255,0.45)" if is_dark else "rgba(0,0,0,0.38)"),
+            "shade": "rgba(255,255,255,0.05)" if is_dark else "rgba(0,0,0,0.04)",
+        }
+
+        # Series are created empty; the page fills every one of them from the
+        # bootstrap, because the embargo can move after the fact.
+        quiet = {"priceLineVisible": False, "lastValueVisible": False,
+                 "crosshairMarkerVisible": False}
+        idx: Dict[str, Optional[int]] = {}
+
+        idx["shade"] = len(self._series)
+        self._series.append({
+            "type": "AreaSeries", "data": [],
+            "options": {**quiet, "priceScaleId": "_cone_shade", "lineWidth": 1,
+                        "lineColor": "rgba(0,0,0,0)", "lineType": 2,
+                        "topColor": colors["shade"], "bottomColor": colors["shade"],
+                        "pointMarkersVisible": False},
+            "price_scale": {"id": "_cone_shade", "scaleMargins": {"top": 0, "bottom": 0},
+                            "pin": (0, 1)},
+        })
+        idx["pre"] = len(self._series)
+        self._series.append({
+            "type": "LineSeries", "data": [],
+            "options": {**quiet, "color": colors["pre"], "lineWidth": 2},
+        })
+        idx["theo"] = None
+        if theo is not None:
+            idx["theo"] = len(self._series)
+            self._series.append({
+                "type": "LineSeries", "data": [],
+                "options": {**quiet, "color": colors["theo"], "lineWidth": 1,
+                            "lineStyle": 1},
+            })
+        idx["median"] = len(self._series)
+        self._series.append({
+            "type": "LineSeries", "data": [],
+            "options": {**quiet, "color": colors["median"], "lineWidth": 2},
+        })
+        idx["realized"] = len(self._series)
+        self._series.append({
+            "type": "LineSeries", "data": [],
+            "options": {**quiet, "color": colors["realized"], "lineWidth": 2,
+                        "crosshairMarkerVisible": True},
+        })
+
+        self._cone_config = {
+            "times": times_ext,
+            "vals": vals,
+            "theo": theo,
+            "n": n,
+            "e0": e0,
+            "e_min": e_min,
+            "e_max": e_max,
+            "paths": int(paths),
+            "block": int(block),
+            "horizon": int(horizon or 0),
+            "ruin": float(ruin),
+            "seed": int(seed),
+            "realized": bool(realized),
+            "slider": bool(slider),
+            "label": label or "",
+            "colors": colors,
+            "idx": idx,
+        }
         return self
 
     def stats_legend(
@@ -1955,6 +2185,15 @@ class Chart:
                     f"{chart_var}.priceScale('{ps['id']}').applyOptions("
                     f"{self._json(ps_opts)});"
                 )
+                # A 0/1 shading series autoscales to whatever is on screen: scroll
+                # to a stretch that is all zeros and 0 lands mid-pane, so the fill
+                # covers the lower half.  Pin the range and 0 stays on the floor.
+                if "pin" in ps:
+                    lo, hi = ps["pin"]
+                    lines.append(
+                        f"{var}.applyOptions({{autoscaleInfoProvider: () => "
+                        f"({{priceRange: {{minValue: {lo}, maxValue: {hi}}}}})}});"
+                    )
 
             for pl in self._price_lines:
                 if pl["series_index"] == i:
@@ -2014,13 +2253,17 @@ class Chart:
         }
         return out;
       }
+      // Carry each season's last value forward inside its own span, so the
+      // set of seasons in the mean does not change with which years happened
+      // to trade on a given calendar day (that is what made it a sawtooth).
       function _avgRows(){
-        const out = [];
+        const out = [], last = new Array(N).fill(null);
         for (let k = 0; k < CFG.grid.length; k++){
           let sum = 0, c = 0;
           for (let i = lo; i <= hi; i++){
             const v = _src(i)[k];
-            if (v !== null && v !== undefined){ sum += v; c++; }
+            if (v !== null && v !== undefined) last[i] = v;
+            if (last[i] !== null && k >= CFG.spans[i][0] && k <= CFG.spans[i][1]){ sum += last[i]; c++; }
           }
           if (c > 0) out.push({time: CFG.grid[k], value: sum / c});
         }
@@ -2035,13 +2278,23 @@ class Chart:
       // Brush moves only toggle visibility - the data itself is unchanged, so
       // there is no reason to push it again on every pointermove.
       function _applySel(){
-        for (let i = 0; i < N; i++) SER[i].applyOptions({ visible: (i >= lo && i <= hi) });
+        for (let i = 0; i < N; i++){
+          const on = (i >= lo && i <= hi);
+          SER[i].applyOptions({ visible: on });
+          const k = document.getElementById('sb-key-' + i);
+          if (k) k.style.opacity = on ? '1' : '0.28';
+        }
         if (AVG) AVG.setData(_avgRows());
       }
       function _applyMode(){
         for (let i = 0; i < N; i++) SER[i].setData(_rows(i));
         if (AVG) AVG.setData(_avgRows());
         _applyFmt();
+        // Percent and absolute live on different scales entirely. Any earlier
+        // drag on the price axis turned autoscale off, and the new data would
+        // then sit outside the old range - out of sight. Force it back on.
+        chart.priceScale('right').applyOptions({ autoScale: true });
+        chart.timeScale().fitContent();
       }
 
       const track = document.getElementById('sb-track');
@@ -2137,30 +2390,11 @@ class Chart:
         if not solid.startswith("#"):
             solid = "#1e1e1e" if is_dark else "#ffffff"
 
-        # ── Controls ──────────────────────────────────────────────────────
-        # These sat in a row of their own and read as bolted on above the chart.
-        # Right-aligned onto the brush row they cost no height at all, and the
-        # season range is legible from the handles without a readout beside it.
-        pill = (f"border:1px solid {br};border-radius:5px;color:{fg};{mono};"
-                f"padding:4px 7px;outline:none;cursor:pointer")
-        ctl = '<div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">'
-        if has_avg:
-            ctl += (
-                f'<button id="sb-avg" title="Mean across the selected seasons" '
-                f'style="{pill};background:{panel}">Average</button>'
-            )
-        ctl += (
-            f'<select id="sb-mode" title="Y-axis scale" style="{pill};background:{solid}">'
-            f'<option value="percent">Percent</option>'
-            f'<option value="value">Absolute</option>'
-            f'</select></div>'
-        )
-
-        # ── Season brush ──────────────────────────────────────────────────
+        # ── Season brush: the only thing above the chart ──────────────────
         brush = ""
-        extra = 34
+        extra = 0
         if cfg["brush"]:
-            extra = 44
+            extra = 40
             step = 1 if n <= 12 else max(1, -(-n // 10))
             shown = sorted(set(list(range(0, n, step)) + [n - 1]))
             ticks = "".join(
@@ -2175,9 +2409,10 @@ class Chart:
                 f"box-shadow:0 1px 3px rgba(0,0,0,0.35);cursor:ew-resize;touch-action:none;z-index:2"
             )
             brush = (
-                # 9px of side padding so a handle parked at either end is not
-                # clipped by the row it sits in.
-                f'<div style="flex:1;min-width:0;position:relative;padding:0 9px">'
+                # 21px of side padding: 12 to line up with the overlays below,
+                # plus 9 so a handle parked at either end is not clipped.
+                f'<div id="sb-wrap" style="position:relative;z-index:6;height:{extra}px;'
+                f'padding:3px 21px 0">'
                 f'<div style="position:relative;height:14px">{ticks}</div>'
                 f'<div id="sb-track" style="position:relative;height:20px;cursor:pointer;'
                 f'touch-action:none">'
@@ -2190,11 +2425,45 @@ class Chart:
                 f'</div></div>'
             )
 
-        html = (
-            f'<div id="sb-wrap" style="position:relative;z-index:6;height:{extra}px;'
-            f'display:flex;align-items:center;justify-content:flex-end;gap:12px;'
-            f'padding:0 12px">{brush}{ctl}</div>'
+        # ── Overlays inside the plot, just under the brush ────────────────
+        # Same idiom as the y-scale gear: absolutely positioned over the canvas,
+        # so they take no height and stop competing with the brush for the top.
+        top = extra + 8
+        small = "font:10px/1 'SF Mono','Consolas',monospace"
+
+        # Colour key, top-left: replaces the right-axis "year value" badges.
+        # Entries dim as the brush hides their season.
+        swatches = "".join(
+            f'<span id="sb-key-{i}" style="display:inline-flex;align-items:center;gap:4px;'
+            f'transition:opacity 0.15s">'
+            f'<i style="width:10px;height:3px;border-radius:2px;background:{cfg["colors"][i]}"></i>'
+            f'{html_module.escape(labels[i])}</span>'
+            for i in range(n)
         )
+        # Controls follow the key on the same row.  Top-right put them over the
+        # price axis; here they are clear of it whatever width the axis takes.
+        pill = (f"border:1px solid {br};border-radius:4px;color:{fg};{small};"
+                f"padding:3px 6px;outline:none;cursor:pointer")
+        ctl = ('<div id="sb-ctl" style="display:inline-flex;align-items:center;gap:5px;'
+               'margin-left:6px;pointer-events:auto">')
+        if has_avg:
+            ctl += (
+                f'<button id="sb-avg" title="Mean across the selected seasons" '
+                f'style="{pill};background:{panel}">Avg</button>'
+            )
+        ctl += (
+            f'<select id="sb-mode" title="Y-axis scale" style="{pill};background:{solid}">'
+            f'<option value="percent">%</option>'
+            f'<option value="value">Abs</option>'
+            f'</select></div>'
+        )
+        key = (
+            f'<div id="sb-key" style="position:absolute;top:{top}px;left:12px;z-index:10;'
+            f'right:80px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;'
+            f'color:{dim};{small};pointer-events:none">{swatches}{ctl}</div>'
+        )
+
+        html = brush + key
 
         b, avg_i = cfg["base_index"], cfg["avg_index"]
         series_vars = ",".join(f"s{b + i}" for i in range(n))
@@ -2204,7 +2473,8 @@ class Chart:
             "return ''+(Math.round(p*100)/100);}"
         )
         payload = {k: cfg[k] for k in
-                   ("grid", "labels", "pct", "val", "mode", "average_on", "ordinal", "unit", "sel")}
+                   ("grid", "labels", "spans", "pct", "val", "mode", "average_on",
+                    "ordinal", "unit", "sel")}
         js = (
             self._SEASONALITY_JS
             .replace("__CFG__", self._json(payload))
@@ -2213,6 +2483,256 @@ class Chart:
             .replace("__VALFMT__", val_fmt)
         )
         return html, js, extra
+
+    # ── Projection cone ───────────────────────────────────────────────────
+
+    _CONE_JS = r"""
+    // ── Projection cone: block bootstrap + band primitive + embargo slider ──
+    (function(){
+      const C = __CFG__;
+      const PRE = __PRE__, REAL = __REAL__, MED = __MED__, THEO = __THEO__, SHADE = __SHADE__;
+      const N = C.n, V = C.vals, D = C.times;
+      const R = new Float64Array(N);
+      for (let i = 1; i < N; i++) R[i] = V[i] / V[i-1] - 1;
+      let e = C.e0;
+      let reveal = C.realized;   // post-embargo data shown, or embargoed
+
+      // Small, fast, seeded: the same embargo always gives the same cone.
+      function mulberry32(a){
+        return function(){
+          a |= 0; a = a + 0x6D2B79F5 | 0;
+          let t = Math.imul(a ^ a >>> 15, 1 | a);
+          t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+          return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+      }
+
+      // Circular block bootstrap of the returns up to and including bar e,
+      // streamed one step at a time so memory is O(paths), not O(paths x H).
+      function bootstrap(e, P){
+        const pool = R.subarray(1, e + 1), n = pool.length;
+        const B = Math.max(1, Math.min(C.block, n));
+        const H = C.horizon > 0 ? C.horizon : (N - 1 - e);
+        const rnd = mulberry32(C.seed);
+        const lvl = new Float64Array(P).fill(100), low = new Float64Array(P).fill(100);
+        const pos = new Int32Array(P), left = new Int32Array(P), tmp = new Float64Array(P);
+        const q = { t: [D[e]], p5: [100], p25: [100], p50: [100], p75: [100], p95: [100] };
+        const at = f => tmp[Math.round(f * (P - 1))];
+        for (let k = 1; k <= H; k++){
+          for (let p = 0; p < P; p++){
+            if (left[p] === 0){ pos[p] = (rnd() * n) | 0; left[p] = B; }
+            lvl[p] *= 1 + pool[pos[p]];
+            pos[p] = (pos[p] + 1) % n; left[p]--;
+            if (lvl[p] < low[p]) low[p] = lvl[p];
+            tmp[p] = lvl[p];
+          }
+          tmp.sort();
+          q.t.push(D[e + k]);
+          q.p5.push(at(0.05)); q.p25.push(at(0.25)); q.p50.push(at(0.50));
+          q.p75.push(at(0.75)); q.p95.push(at(0.95));
+        }
+        let ruined = 0;
+        const floor = 100 * (1 - C.ruin);
+        for (let p = 0; p < P; p++) if (low[p] <= floor) ruined++;
+        return { q: q, H: H, pruin: ruined / P };
+      }
+
+      // Bands and the embargo line are drawn by a series primitive on the
+      // median, in that series' own price/time coordinate space.
+      const band = {
+        _q: null, _chart: null, _series: null, _req: null,
+        set(q){ this._q = q; if (this._req) this._req(); },
+        attached(p){ this._chart = p.chart; this._series = p.series; this._req = p.requestUpdate; },
+        detached(){ this._chart = null; this._series = null; this._req = null; },
+        updateAllViews(){},
+        paneViews(){ return [this._view]; },
+      };
+      function _poly(ctx, q, lo, hi, alpha){
+        const ts = band._chart.timeScale(), s = band._series;
+        const xs = [], yl = [], yh = [];
+        for (let i = 0; i < q.t.length; i++){
+          const x = ts.timeToCoordinate(q.t[i]);
+          const a = s.priceToCoordinate(q[lo][i]), b = s.priceToCoordinate(q[hi][i]);
+          if (x === null || a === null || b === null) continue;
+          xs.push(x); yl.push(a); yh.push(b);
+        }
+        if (xs.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(xs[0], yh[0]);
+        for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], yh[i]);
+        for (let i = xs.length - 1; i >= 0; i--) ctx.lineTo(xs[i], yl[i]);
+        ctx.closePath();
+        ctx.globalAlpha = alpha; ctx.fillStyle = C.colors.band; ctx.fill(); ctx.globalAlpha = 1;
+      }
+      band._view = {
+        zOrder(){ return 'bottom'; },
+        renderer(){
+          return { draw(target){
+            target.useMediaCoordinateSpace(function(scope){
+              const ctx = scope.context, q = band._q;
+              if (!q || !band._chart) return;
+              _poly(ctx, q, 'p5', 'p95', 0.10);
+              _poly(ctx, q, 'p25', 'p75', 0.22);
+              const x = band._chart.timeScale().timeToCoordinate(D[e]);
+              if (x !== null){
+                ctx.save();
+                ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+                ctx.strokeStyle = C.colors.pre; ctx.globalAlpha = 0.7;
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, scope.mediaSize.height); ctx.stroke();
+                ctx.restore();
+              }
+            });
+          } };
+        },
+      };
+      MED.attachPrimitive(band);
+
+      function rows(from, to, base, arr){
+        const out = [];
+        for (let i = from; i <= to; i++){
+          if (arr[i] === null || arr[i] === undefined) continue;
+          out.push({ time: D[i], value: arr[i] / base * 100 });
+        }
+        return out;
+      }
+      const pct = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)) + '%';
+      const stats = document.getElementById('pc-stats');
+      const lbl = document.getElementById('pc-lbl');
+
+      // While the slider is moving a 300-path preview keeps the frame rate up
+      // over long horizons; the full set is drawn on release.
+      const PREVIEW = Math.min(300, C.paths);
+      function render(P){
+        const base = V[e];
+        const bs = bootstrap(e, P || C.paths);
+        const end = e + bs.H;
+        PRE.setData(rows(0, e, base, V));
+        MED.setData(bs.q.t.map((t, i) => ({ time: t, value: bs.q.p50[i] })));
+        band.set(bs.q);
+        _postEmbargo();
+        const sh = [];
+        for (let i = 0; i <= Math.max(N - 1, end); i++) sh.push({ time: D[i], value: i >= e ? 1 : 0 });
+        SHADE.setData(sh);
+        const L = bs.q.p50.length - 1;
+        if (stats){
+          stats.textContent =
+            'median ' + pct(bs.q.p50[L] - 100) + ' · P5 ' + pct(bs.q.p5[L] - 100)
+            + ' · P95 ' + pct(bs.q.p95[L] - 100) + ' · P(ruin) ' + Math.round(bs.pruin * 100) + '%';
+          stats.title = 'At the end of the horizon (' + bs.H + ' bars), over ' + (P || C.paths)
+            + ' block-bootstrap paths (block ' + C.block + ') of the ' + e + ' returns before the embargo.'
+            + ' P(ruin): share of paths that ever fell ' + Math.round(C.ruin * 100) + '% below the embargo level.';
+        }
+        if (lbl) lbl.textContent = 'Embargo ' + D[e];
+      }
+
+      // Everything after the embargo is future information: one switch
+      // hides or shows it all, leaving the cone as the only view forward.
+      const rv = document.getElementById('pc-reveal');
+      function _postEmbargo(){
+        const base = V[e];
+        REAL.setData(reveal ? rows(e, N - 1, base, V) : []);
+        if (THEO && C.theo){
+          const tb = C.theo[e];
+          THEO.setData((reveal && tb) ? rows(e, N - 1, tb, C.theo) : []);
+        }
+        if (rv) rv.style.opacity = reveal ? '1' : '0.42';
+      }
+      if (rv) rv.addEventListener('click', function(){ reveal = !reveal; _postEmbargo(); });
+
+      const sl = document.getElementById('pc-slider');
+      if (sl){
+        let pending = false;
+        sl.addEventListener('input', function(){
+          e = parseInt(this.value, 10);
+          if (pending) return;
+          pending = true;
+          requestAnimationFrame(function(){ pending = false; render(PREVIEW); });
+        });
+        sl.addEventListener('change', function(){ e = parseInt(this.value, 10); render(); });
+      }
+      render();
+    })();
+"""
+
+    def _build_cone(self, is_dark: bool):
+        """Return (html, js, extra_height) for the projection-cone chrome."""
+        cfg = self._cone_config
+        if not cfg:
+            return "", "", 0
+
+        fg = "rgba(255,255,255,0.88)" if is_dark else "rgba(0,0,0,0.78)"
+        dim = "rgba(255,255,255,0.50)" if is_dark else "rgba(0,0,0,0.45)"
+        br = "rgba(255,255,255,0.16)" if is_dark else "rgba(0,0,0,0.14)"
+        panel = "rgba(255,255,255,0.06)" if is_dark else "rgba(0,0,0,0.05)"
+        mono = "font:11px/1 'SF Mono','Consolas',monospace"
+        small = "font:10px/1 'SF Mono','Consolas',monospace"
+        col = cfg["colors"]
+
+        # ── Header: stats line + colour key, top-left inside the plot ─────
+        def line(c, dashed=False):
+            style = f"width:14px;height:0;border-top:2px {'dashed' if dashed else 'solid'} {c}"
+            return f'<i style="display:inline-block;{style}"></i>'
+
+        def box(c, alpha):
+            return (f'<i style="display:inline-block;width:14px;height:8px;border-radius:2px;'
+                    f'background:{c};opacity:{alpha}"></i>')
+
+        items = [(line(col["realized"]), "realized"), (line(col["median"]), "median")]
+        items.append((box(col["band"], 0.32), "25–75%"))
+        items.append((box(col["band"], 0.16), "5–95%"))
+        if cfg["idx"]["theo"] is not None:
+            items.append((line(col["theo"], dashed=True), "theoretical"))
+        key = "".join(
+            f'<span style="display:inline-flex;align-items:center;gap:5px">{sw}{txt}</span>'
+            for sw, txt in items
+        )
+        # The plot carries only the key (and the strategy name, quietly, as its
+        # first entry).  The numbers live next to the slider that changes them;
+        # without a slider they drop to a dim second line here instead.
+        if cfg["label"]:
+            key = (f'<span style="color:{fg}">{html_module.escape(cfg["label"])}</span>' + key)
+        pill = (f"border:1px solid {br};border-radius:4px;color:{fg};{small};"
+                f"padding:3px 6px;outline:none;cursor:pointer;background:{panel}")
+        key += (f'<button id="pc-reveal" title="Show or hide everything after the embargo" '
+                f'style="{pill};margin-left:6px;pointer-events:auto">Realized</button>')
+        stats_span = f'<span id="pc-stats" style="color:{dim};{small};white-space:nowrap"></span>'
+        header = (
+            f'<div id="pc-hdr" style="position:absolute;top:8px;left:12px;right:70px;z-index:10;'
+            f'display:flex;flex-direction:column;gap:5px;pointer-events:none">'
+            f'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;'
+            f'color:{dim};{small}">{key}</div>'
+            f'{"" if cfg["slider"] else stats_span}'
+            f'</div>'
+        )
+
+        # ── Embargo slider + the numbers it drives, under the chart ───────
+        bar, extra = "", 0
+        if cfg["slider"]:
+            extra = 36
+            bar = (
+                f'<div id="pc-bar" style="display:flex;align-items:center;justify-content:center;'
+                f'gap:12px;padding:4px 16px;white-space:nowrap;height:36px">'
+                f'<span id="pc-lbl" style="color:{fg};{mono}"></span>'
+                f'<input id="pc-slider" type="range" min="{cfg["e_min"]}" max="{cfg["e_max"]}" '
+                f'step="1" value="{cfg["e0"]}" title="Drag to move the embargo" '
+                f'style="flex:1;max-width:420px;accent-color:{col["realized"]};cursor:ew-resize">'
+                f'{stats_span}'
+                f'</div>'
+            )
+
+        i = cfg["idx"]
+        payload = {k: cfg[k] for k in ("times", "vals", "theo", "n", "e0", "paths", "block",
+                                       "horizon", "ruin", "seed", "realized", "colors")}
+        js = (
+            self._CONE_JS
+            .replace("__CFG__", self._json(payload))
+            .replace("__PRE__", f"s{i['pre']}")
+            .replace("__REAL__", f"s{i['realized']}")
+            .replace("__MED__", f"s{i['median']}")
+            .replace("__THEO__", f"s{i['theo']}" if i["theo"] is not None else "null")
+            .replace("__SHADE__", f"s{i['shade']}")
+        )
+        return header + bar, js, extra
 
     def _build_html(self) -> str:
         chart_opts = self._json(self._build_chart_options())
@@ -2599,8 +3119,9 @@ class Chart:
                 ])
 
         season_html, season_js, season_extra = self._build_seasonality(is_dark_bg)
+        cone_html, cone_js, cone_extra = self._build_cone(is_dark_bg)
 
-        total_extra = slider_extra_height + smoothing_extra_height + season_extra
+        total_extra = slider_extra_height + smoothing_extra_height + season_extra + cone_extra
         self._slider_extra_height = total_extra
 
         _resize_js = """
@@ -2678,6 +3199,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 <div id="err"></div>
 {slider_html}
 {smoothing_html}
+{cone_html}
 {_glass_close}{'<img id="signum-logo" src="data:image/svg+xml;base64,' + _LOGO_B64 + '" width="30" height="30" alt="Signum">' if self._logo else ''}
 <script>
 try {{
@@ -2686,6 +3208,7 @@ try {{
     {_resize_js}
     {_yscale_js}
     {season_js}
+    {cone_js}
     {slider_js}
     {smoothing_js}
     {alloc_tooltip_js}

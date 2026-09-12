@@ -86,7 +86,25 @@ A misspelled theme raises `ValueError` listing valid names (via
         # average=True draws the mean of the *selected* seasons, live-recomputed
         # brush=True adds a two-handle season range above the chart; drag it and
         #   the average moves — that is the regime read. Opens on the last 12.
-        # in-chart: Percent/Absolute switch, Average toggle
+        # in-chart: colour key top-left with the Avg toggle + %/Abs switch after it
+    .projection_cone(equity, embargo, value_col=None, paths=2000, block=20,
+                     horizon=None, ruin=0.2, theoretical=None, realized=True,
+                     slider=True, seed=42, color=None, realized_color=None,
+                     theoretical_color=None, label=None)
+        # the record up to `embargo` is block-bootstrapped into a cone (5–95%,
+        #   25–75%, median) of where the curve should go; the post-embargo curve
+        #   is drawn over it, everything rebased to 100 at the embargo
+        # embargo: date, bar index (negative from the end) or fraction in (0,1)
+        # horizon=None projects to the end of the data; an int extends the axis
+        # ruin: drawdown from the embargo level counted as ruin → P(ruin) in header
+        # realized: initial state of the in-chart "Realized" toggle in the key —
+        #   off hides everything after the embargo (theoretical too), cone stays
+        # slider=True: embargo slider under the chart, re-bootstraps live in the
+        #   page (no callback) — drag it back to walk-forward test the strategy;
+        #   300-path preview while dragging, full set on release
+        # colours: theme line_colors in order — record+cone first, realized second
+        # key top-left (label first); "median … · P5 … · P95 … · P(ruin) …" sits
+        #   beside the slider (hover it for the definition), not on the plot
 
 `line=True` / `tag=True` add a crosshair-following dashed line / right-axis
 value label (Dashboard only).
