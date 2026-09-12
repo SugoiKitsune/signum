@@ -37,7 +37,7 @@ chart  # renders inline in Jupyter
 
 ## Features
 
-- **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`
+- **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`, `seasonality` (years overlaid on one Jan–Dec axis, with a season brush), `projection_cone` (bootstrap cone past an embargo, realized path over it, live embargo slider)
 - **Annotations** — `price_line`, `hline`, `marker`, `signals`, `shade`, `set_watermark`
 - **StatChart** — `distribution` (histogram + KDE), `scatter`, `curve` (fitted line + confidence band + date slider), `spread`
 - **Themes** — `dark` (default), `light`, `ft`, `midnight`, `rome`, `glass`, `notion-dark`, `notion-light`
@@ -115,3 +115,34 @@ Pass per-date `frames={date: {"mean": ..., "lower": ..., "upper": ..., "prior": 
 as a dashed ghost, and chain `.spread(grid, frames=..., base=...)` for a linked
 `active − base` difference panel below — all driven by the one slider. See the
 **Yield Curve** section of [`demo.ipynb`](demo.ipynb).
+
+## 3-D Surfaces (experimental)
+
+`Surface3D` is a rotatable WebGL surface for vol surfaces and term-structure /
+continuous-time models, themed from the same `THEMES` as everything else. It is a
+proof of concept: importable, but **not yet exported from `signum` or folded into
+`StatChart`**.
+
+```python
+from signum.engine.surface3d import Surface3D
+
+Surface3D(theme="midnight", height=560, title="IV surface",
+          colorscale="viridis", auto_rotate=False).surface(
+    ttm, moneyness, iv,                       # x (nx), y (ny), z (ny×nx) or DataFrame
+    x_label="TTM (yrs)", y_label="Moneyness", z_label="Implied vol",
+    wireframe=True, shading="color",
+).show()        # Jupyter — also .render() / .save(path)
+```
+
+- `z` takes a 2-D array `(ny, nx)` or a DataFrame (index → y, columns → x); NaN punches holes.
+- `colorscale`: `viridis` / `magma` / `plasma` / `turbo` / `rdylbu`, or an explicit list.
+- Drag to rotate · scroll to zoom · hover for labelled x / y / z.
+- echarts is vendored and pinned to **5.4.3** — echarts-gl 2.0.9 renders blank on 5.5.x.
+- Each inline chart embeds ~2 MB of echarts, so don't commit executed outputs.
+
+Demos live under `support/`: `surface_demo.ipynb` (inline) and
+`python support/surface_demo.py` (writes two self-contained HTML files — an implied-vol
+surface and a Black-Scholes price surface).
+
+Next steps: fold into `StatChart` as `StatChart.surface(x, y, z)`, mixed 2-D + 3-D
+panels in one grid, and dated frames with a slider like `curve()`.
