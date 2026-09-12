@@ -1745,9 +1745,10 @@ class Chart:
             times_ext += [d.strftime("%Y-%m-%d") for d in ext]
 
         # Colours come off the theme's line palette in order, the way line()
-        # picks them: the record and its cone share the first (the cone is the
-        # record continued), the realized path takes the second so it reads
-        # against the cone in whatever palette the theme has.
+        # picks them: the record and its cone share the first (the median is
+        # dashed, so it reads as the record's expectation rather than more of
+        # it), the realized path takes the second so it stands out against the
+        # cone in whatever palette the theme has.
         is_dark = self._theme_name in DARK_THEMES
         primary = color or self._next_line_color()
         second = realized_color or self._next_line_color()
@@ -1792,7 +1793,7 @@ class Chart:
         idx["median"] = len(self._series)
         self._series.append({
             "type": "LineSeries", "data": [],
-            "options": {**quiet, "color": colors["median"], "lineWidth": 2},
+            "options": {**quiet, "color": colors["median"], "lineWidth": 2, "lineStyle": 2},
         })
         idx["realized"] = len(self._series)
         self._series.append({
@@ -2669,19 +2670,19 @@ class Chart:
         col = cfg["colors"]
 
         # ── Header: stats line + colour key, top-left inside the plot ─────
-        def line(c, dashed=False):
-            style = f"width:14px;height:0;border-top:2px {'dashed' if dashed else 'solid'} {c}"
-            return f'<i style="display:inline-block;{style}"></i>'
+        def line(c, style="solid"):
+            return (f'<i style="display:inline-block;width:14px;height:0;'
+                    f'border-top:2px {style} {c}"></i>')
 
         def box(c, alpha):
             return (f'<i style="display:inline-block;width:14px;height:8px;border-radius:2px;'
                     f'background:{c};opacity:{alpha}"></i>')
 
-        items = [(line(col["realized"]), "realized"), (line(col["median"]), "median")]
+        items = [(line(col["realized"]), "realized"), (line(col["median"], "dashed"), "median")]
         items.append((box(col["band"], 0.32), "25–75%"))
         items.append((box(col["band"], 0.16), "5–95%"))
         if cfg["idx"]["theo"] is not None:
-            items.append((line(col["theo"], dashed=True), "theoretical"))
+            items.append((line(col["theo"], "dotted"), "theoretical"))
         key = "".join(
             f'<span style="display:inline-flex;align-items:center;gap:5px">{sw}{txt}</span>'
             for sw, txt in items

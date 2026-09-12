@@ -415,10 +415,10 @@ THEMES: Dict[str, dict] = {
             "wickDownColor": "#e6e6e6",
         },
         "line": {"color": "#e6e6e6", "lineWidth": 2},
-        # Ink, then two greys, then muted accents for charts that need more
-        # than three lines told apart.
+        # Ink, one muted accent, then greys - a second series in plain grey
+        # sat behind the ink instead of beside it.  More accents past that.
         "line_colors": [
-            "#e6e6e6", "#8c8c8c", "#5a5a5a", "#7f9db9",
+            "#e6e6e6", "#7f9db9", "#8c8c8c", "#5a5a5a",
             "#a88f5f", "#8f7fb0", "#6fa38a", "#b07070",
         ],
         "area": {
@@ -472,10 +472,10 @@ THEMES: Dict[str, dict] = {
             "wickDownColor": "#1a1a1a",
         },
         "line": {"color": "#1a1a1a", "lineWidth": 2},
-        # Ink, then two greys, then muted accents for charts that need more
-        # than three lines told apart.
+        # Ink, one muted accent, then greys - a second series in plain grey
+        # sat behind the ink instead of beside it.  More accents past that.
         "line_colors": [
-            "#1a1a1a", "#7a7a7a", "#b3b3b3", "#4f6f9f",
+            "#1a1a1a", "#4f6f9f", "#7a7a7a", "#b3b3b3",
             "#8c7340", "#6f5f96", "#4f8a6a", "#9a5a5a",
         ],
         "area": {
