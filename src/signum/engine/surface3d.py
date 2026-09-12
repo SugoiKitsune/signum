@@ -28,7 +28,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
-from .themes import resolve_theme
+from .themes import resolve_theme, DARK_THEMES
 from .chart import _LOGO_B64
 
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"  # src/signum/vendor
@@ -189,7 +189,7 @@ class Surface3D:
         if bg.startswith("#") and len(bg) >= 7:
             r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
             return (r * 0.299 + g * 0.587 + b * 0.114) < 140
-        return self._theme_name in ("dark", "midnight", "glass")
+        return self._theme_name in DARK_THEMES
 
     @staticmethod
     def _rgba(color: Optional[str], alpha: float) -> Optional[str]:

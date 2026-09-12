@@ -1,11 +1,18 @@
 """Theme definitions matching Signum's design system.
 
-Six themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire),
-glass (academic navy frost — ideal for StatChart; formerly "distfit").
+Eight themes: dark, light, ft (Financial Times), midnight, rome (Roman Empire),
+glass (academic navy frost — ideal for StatChart; formerly "distfit"),
+notion-dark and notion-light (monochrome, Notion-like).
 
 light, ft, rome and glass mirror the matching ForgeFolio app themes (ForgeFolio
 ThemeManager.colors) so signum charts embedded in ForgeFolio share its palette;
-dark and midnight are signum's own.
+notion-dark / notion-light mirror the issuer-financials pages (near-black or
+white ground, grey type, mono numerals, no colour except where a chart needs
+up vs down — and there it is hollow vs filled, not green vs red); dark and
+midnight are signum's own.
+
+:data:`DARK_THEMES` is the set of names with a dark ground; every renderer
+that picks overlay contrast checks it rather than a hardcoded tuple.
 
 The canonical name list is :data:`THEME_NAMES`; resolve a name to its palette
 with :func:`resolve_theme`, which raises a helpful error on a typo instead of
@@ -376,7 +383,127 @@ THEMES: Dict[str, dict] = {
             "percentile_color": "rgba(200, 200, 195, 0.45)",
         },
     },
+    # ── Notion-like monochrome pair ──────────────────────────────────────
+    "notion-dark": {
+        "chart": {
+            "layout": {
+                "background": {"type": "solid", "color": "#0f0f0f"},
+                "textColor": "#8a8a8a",
+                "fontSize": 11,
+                "fontFamily": "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', Consolas, monospace",
+            },
+            "grid": {
+                "vertLines": {"color": "rgba(255, 255, 255, 0.06)"},
+                "horzLines": {"color": "rgba(255, 255, 255, 0.06)"},
+            },
+            "crosshair": {
+                "mode": 0,
+                "vertLine": {"width": 1, "color": "rgba(255, 255, 255, 0.30)", "style": 3},
+                "horzLine": {"width": 1, "color": "rgba(255, 255, 255, 0.30)", "style": 3},
+            },
+            "rightPriceScale": {"borderColor": "rgba(255, 255, 255, 0.10)"},
+            "timeScale": {"borderColor": "rgba(255, 255, 255, 0.10)"},
+        },
+        # Monochrome candles: an up bar is hollow (ground fill, ink outline),
+        # a down bar is solid ink.  The page these mirror has no green or red.
+        "candlestick": {
+            "upColor": "#0f0f0f",
+            "downColor": "#e6e6e6",
+            "borderUpColor": "#e6e6e6",
+            "borderDownColor": "#e6e6e6",
+            "wickUpColor": "#e6e6e6",
+            "wickDownColor": "#e6e6e6",
+        },
+        "line": {"color": "#e6e6e6", "lineWidth": 2},
+        # Ink, then two greys, then muted accents for charts that need more
+        # than three lines told apart.
+        "line_colors": [
+            "#e6e6e6", "#8c8c8c", "#5a5a5a", "#7f9db9",
+            "#a88f5f", "#8f7fb0", "#6fa38a", "#b07070",
+        ],
+        "area": {
+            "topColor": "rgba(230, 230, 230, 0.16)",
+            "bottomColor": "rgba(230, 230, 230, 0.0)",
+            "lineColor": "#e6e6e6",
+            "lineWidth": 2,
+        },
+        "baseline": {
+            "topLineColor": "#e6e6e6",
+            "topFillColor1": "rgba(230, 230, 230, 0.22)",
+            "topFillColor2": "rgba(230, 230, 230, 0.03)",
+            "bottomLineColor": "#8c8c8c",
+            "bottomFillColor1": "rgba(140, 140, 140, 0.03)",
+            "bottomFillColor2": "rgba(140, 140, 140, 0.22)",
+        },
+        "histogram": {"color": "#8c8c8c"},
+        "volume": {
+            "upColor": "rgba(230, 230, 230, 0.38)",
+            "downColor": "rgba(230, 230, 230, 0.16)",
+        },
+    },
+    "notion-light": {
+        "chart": {
+            "layout": {
+                "background": {"type": "solid", "color": "#ffffff"},
+                "textColor": "#7a7a7a",
+                "fontSize": 11,
+                "fontFamily": "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', Consolas, monospace",
+            },
+            "grid": {
+                "vertLines": {"color": "rgba(0, 0, 0, 0.05)"},
+                "horzLines": {"color": "rgba(0, 0, 0, 0.05)"},
+            },
+            "crosshair": {
+                "mode": 0,
+                "vertLine": {"width": 1, "color": "rgba(0, 0, 0, 0.30)", "style": 3},
+                "horzLine": {"width": 1, "color": "rgba(0, 0, 0, 0.30)", "style": 3},
+            },
+            "rightPriceScale": {"borderColor": "rgba(0, 0, 0, 0.10)"},
+            "timeScale": {"borderColor": "rgba(0, 0, 0, 0.10)"},
+        },
+        # Monochrome candles: an up bar is hollow (ground fill, ink outline),
+        # a down bar is solid ink.  The page these mirror has no green or red.
+        "candlestick": {
+            "upColor": "#ffffff",
+            "downColor": "#1a1a1a",
+            "borderUpColor": "#1a1a1a",
+            "borderDownColor": "#1a1a1a",
+            "wickUpColor": "#1a1a1a",
+            "wickDownColor": "#1a1a1a",
+        },
+        "line": {"color": "#1a1a1a", "lineWidth": 2},
+        # Ink, then two greys, then muted accents for charts that need more
+        # than three lines told apart.
+        "line_colors": [
+            "#1a1a1a", "#7a7a7a", "#b3b3b3", "#4f6f9f",
+            "#8c7340", "#6f5f96", "#4f8a6a", "#9a5a5a",
+        ],
+        "area": {
+            "topColor": "rgba(26, 26, 26, 0.16)",
+            "bottomColor": "rgba(26, 26, 26, 0.0)",
+            "lineColor": "#1a1a1a",
+            "lineWidth": 2,
+        },
+        "baseline": {
+            "topLineColor": "#1a1a1a",
+            "topFillColor1": "rgba(26, 26, 26, 0.22)",
+            "topFillColor2": "rgba(26, 26, 26, 0.03)",
+            "bottomLineColor": "#7a7a7a",
+            "bottomFillColor1": "rgba(122, 122, 122, 0.03)",
+            "bottomFillColor2": "rgba(122, 122, 122, 0.22)",
+        },
+        "histogram": {"color": "#7a7a7a"},
+        "volume": {
+            "upColor": "rgba(26, 26, 26, 0.38)",
+            "downColor": "rgba(26, 26, 26, 0.16)",
+        },
+    },
 }
+
+# Names with a dark ground.  Overlay chrome (sliders, keys, tooltips) picks
+# its contrast from this, so a new dark theme is one entry here, not a hunt
+# through every renderer.
+DARK_THEMES = frozenset({"dark", "midnight", "glass", "notion-dark"})
 
 #: Canonical, ordered tuple of valid theme names — use for introspection /
 #: building UI pickers: ``Chart(theme=signum.THEME_NAMES[0])``.

@@ -35,10 +35,14 @@ Pass `theme=` to any constructor. Valid names (also `signum.THEME_NAMES`):
     midnight  deep navy (TradingView-like)
     rome      marble + Tyrian purple, serif
     glass     academic navy frosted gradient — best for StatChart
+    notion-dark   monochrome on near-black: grey type, mono numerals, hollow/filled
+                  candles instead of green/red — matches the issuer-financials pages
+    notion-light  the same on white
 
 light, ft, rome, glass mirror the matching ForgeFolio app themes (so signum
-charts embedded in ForgeFolio share its palette); dark, midnight are signum's
-own. (glass was formerly "distfit".)
+charts embedded in ForgeFolio share its palette); notion-dark / notion-light
+mirror the issuer-financials pages; dark, midnight are signum's own. (glass was
+formerly "distfit".) `signum.engine.themes.DARK_THEMES` names the dark ones.
 
 A misspelled theme raises `ValueError` listing valid names (via
 `signum.resolve_theme(name)`); it does NOT silently fall back.

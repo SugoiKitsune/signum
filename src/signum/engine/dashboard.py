@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 
 from .chart import Chart, _get_lc_js, _LOGO_B64
-from .themes import THEMES, resolve_theme
+from .themes import THEMES, resolve_theme, DARK_THEMES
 
 # ── Signal mode lookup table ──────────────────────────────────────────────────
 # Each entry: (long_idx, short_idx, long_pos, short_pos, eq_pos,
@@ -760,7 +760,7 @@ class Dashboard:
             return "<html><body>No panes</body></html>"
 
         bg = self._theme.get("chart", {}).get("layout", {}).get("background", {}).get("color", "#1e1e1e")
-        is_dark = self._theme_name in ("dark", "midnight", "glass")
+        is_dark = self._theme_name in DARK_THEMES
         title_color = "rgba(255,255,255,0.55)" if is_dark else "rgba(0,0,0,0.55)"
         title_font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
@@ -770,7 +770,7 @@ class Dashboard:
             _r, _g, _b = (int(_bg_hex[i:i+2], 16) for i in (0, 2, 4))
             _logo_invert = "filter:invert(1);" if (_r * 0.299 + _g * 0.587 + _b * 0.114) > 150 else ""
         elif self._theme.get("background_css") or self._theme.get("background_svg"):
-            if self._theme_name not in ("dark", "midnight", "glass"):
+            if self._theme_name not in DARK_THEMES:
                 _logo_invert = "filter:invert(1);"
 
         lc_js = _get_lc_js()
@@ -975,7 +975,7 @@ class Dashboard:
             _at = getattr(_at_pane, "_alloc_tooltip", None)
             if _at:
                 _at_chart_var = f"chart{_at_idx}"
-                _is_dk = self._theme_name in ("dark", "midnight", "glass")
+                _is_dk = self._theme_name in DARK_THEMES
                 _box_bg = "rgba(10,10,26,0.75)" if _is_dk else "rgba(255,255,255,0.75)"
                 _lbl_c = "rgba(255,255,255,0.65)" if _is_dk else "rgba(0,0,0,0.60)"
                 _val_c = "rgba(255,255,255,0.90)" if _is_dk else "rgba(0,0,0,0.85)"

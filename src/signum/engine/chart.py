@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import pandas as pd
 
-from .themes import THEMES, resolve_theme
+from .themes import THEMES, resolve_theme, DARK_THEMES
 from .logos import LOGO_APEX as _LOGO_B64  # swap to LOGO_DIAMOND to restore the classic logo
 
 # ── Local JS bundle ───────────────────────────────────────────────────────
@@ -1748,7 +1748,7 @@ class Chart:
         # picks them: the record and its cone share the first (the cone is the
         # record continued), the realized path takes the second so it reads
         # against the cone in whatever palette the theme has.
-        is_dark = self._theme_name in ("dark", "midnight", "glass")
+        is_dark = self._theme_name in DARK_THEMES
         primary = color or self._next_line_color()
         second = realized_color or self._next_line_color()
         colors = {
@@ -2133,7 +2133,7 @@ class Chart:
         opts["layout"] = layout
 
         if self._watermark:
-            is_dark = self._theme_name in ("dark", "midnight", "glass")
+            is_dark = self._theme_name in DARK_THEMES
             opts["watermark"] = {
                 "visible": True,
                 "text": self._watermark,
@@ -2762,11 +2762,11 @@ class Chart:
                 _logo_invert = "filter:invert(1);"
         elif custom_bg_css or bg_svg:
             # Only invert if the theme is actually light (glass is dark with a CSS gradient)
-            if self._theme_name not in ("dark", "midnight", "glass"):
+            if self._theme_name not in DARK_THEMES:
                 _logo_invert = "filter:invert(1);"
 
         # ── Threshold slider components ───────────────────────────────────
-        is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
+        is_dark_bg = self._theme_name in DARK_THEMES
         slider_html = ""
         slider_js = ""
         slider_extra_height = 0
@@ -2869,7 +2869,7 @@ class Chart:
         if self._stats_legend:
             sl = self._stats_legend
             pos = sl["position"]
-            is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
+            is_dark_bg = self._theme_name in DARK_THEMES
             box_bg = "rgba(10,10,26,0.62)" if is_dark_bg else "rgba(255,255,255,0.68)"
             lbl_c  = "rgba(255,255,255,0.55)" if is_dark_bg else "rgba(0,0,0,0.45)"
             val_c  = "rgba(255,255,255,0.92)" if is_dark_bg else "rgba(0,0,0,0.88)"
@@ -2904,7 +2904,7 @@ class Chart:
         alloc_tooltip_js = ""
         if self._alloc_tooltip:
             at = self._alloc_tooltip
-            is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
+            is_dark_bg = self._theme_name in DARK_THEMES
             box_bg = "rgba(10,10,26,0.85)" if is_dark_bg else "rgba(255,255,255,0.90)"
             lbl_c  = "rgba(255,255,255,0.72)" if is_dark_bg else "rgba(0,0,0,0.65)"
             val_c  = "rgba(255,255,255,0.95)" if is_dark_bg else "rgba(0,0,0,0.92)"
@@ -3022,7 +3022,7 @@ class Chart:
         smoothing_html = ""
         smoothing_js   = ""
         smoothing_extra_height = 0
-        is_dark_bg = self._theme_name in ("dark", "midnight", "glass")
+        is_dark_bg = self._theme_name in DARK_THEMES
         _lbl_c = "rgba(255,255,255,0.88)" if is_dark_bg else "rgba(0,0,0,0.78)"
         for sc_idx, sc in enumerate(self._smoothing_configs):
             smoothing_extra_height += 36

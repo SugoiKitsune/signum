@@ -24,7 +24,7 @@ from typing import Optional, List
 import numpy as np
 import pandas as pd
 
-from .themes import THEMES, resolve_theme
+from .themes import THEMES, resolve_theme, DARK_THEMES
 from .chart import _LOGO_B64
 
 
@@ -868,7 +868,7 @@ class StatChart:
         if bg.startswith("#") and len(bg) >= 7:
             r, g, b = (int(bg[i:i+2], 16) for i in (1, 3, 5))
             return (r * 0.299 + g * 0.587 + b * 0.114) < 140
-        return self._theme_name in ("dark", "midnight", "glass")
+        return self._theme_name in DARK_THEMES
 
     def _font_family(self) -> str:
         return (self._theme.get("chart", {})

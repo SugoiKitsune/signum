@@ -34,6 +34,8 @@ NOTE = {
     "midnight": "signum only",
     "rome": "matches ForgeFolio",
     "glass": "academic navy frost (formerly distfit; shared with ForgeFolio glass)",
+    "notion-dark": "monochrome on near-black; hollow/filled candles (issuer pages)",
+    "notion-light": "monochrome on white; hollow/filled candles (issuer pages)",
 }
 
 cards = []
