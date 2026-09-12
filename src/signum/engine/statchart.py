@@ -1000,6 +1000,7 @@ class StatChart:
         # Height accounting: title ≈ 40px, slider ≈ 36px
         top_px = (40 if self._title else 0) + (36 if self._slider else 0)
         grid_h = f"calc(100vh - {top_px}px)"
+        grid_w = f"{self._width}px" if self._width else "100%"
 
         return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -1007,7 +1008,7 @@ class StatChart:
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{{bg_css}font-family:{font};font-style:{font_style};overflow:hidden;position:relative;border-radius:12px}}
 #grid{{display:grid;grid-template-columns:repeat({cols},1fr);
-  gap:10px;padding:4px 16px 10px 16px;width:100%;height:{grid_h}}}
+  gap:10px;padding:4px 16px 10px 16px;width:{grid_w};height:{grid_h}}}
 .cell{{position:relative;width:100%;height:100%;min-height:0}}
 canvas{{display:block}}
 </style></head><body>
@@ -1100,6 +1101,7 @@ P.forEach(function(p){{
 
   /* ── shared layout values (set during draw, used by hover) ── */
   let _pad,_pW,_pH,_xMin,_xMax,_yMin,_yMax,_maxC,_W,_H;
+  let VIEW=null;   /* zoomed/panned x0,x1,y0,y1; null = fit to data */
   const sx=v=>_pad.left+(v-_xMin)/(_xMax-_xMin)*_pW;
   const sy=v=>_pad.top+_pH-(v-_yMin)/(_yMax-_yMin)*_pH;
 
@@ -1235,6 +1237,7 @@ P.forEach(function(p){{
       }}}}}}
       const xP=(_xMax-_xMin)*0.05||1,yP=(_yMax-_yMin)*0.05||1;
       _xMin-=xP;_xMax+=xP;_yMin-=yP;_yMax+=yP;
+      if(VIEW){{_xMin=VIEW.x0;_xMax=VIEW.x1;_yMin=VIEW.y0;_yMax=VIEW.y1;}}
 
       const CB=p.colorbar;
       _pad={{top:30,right:CB?72:14,bottom:34,left:52}};
@@ -1262,7 +1265,9 @@ P.forEach(function(p){{
       ctx.beginPath();ctx.moveTo(_pad.left,_pad.top+_pH);ctx.lineTo(_W-_pad.right,_pad.top+_pH);ctx.stroke();
       ctx.beginPath();ctx.moveTo(_pad.left,_pad.top);ctx.lineTo(_pad.left,_pad.top+_pH);ctx.stroke();
 
-      /* fitted curves (band + line), drawn under the markers */
+      /* fitted curves (band + line), drawn under the markers - clipped, since a
+         zoomed view leaves data outside the plot */
+      ctx.save();ctx.beginPath();ctx.rect(_pad.left,_pad.top,_pW,_pH);ctx.clip();
       if(p.curves){{
         for(const cv of p.curves){{
           if(cv.lower&&cv.upper){{
@@ -1287,6 +1292,7 @@ P.forEach(function(p){{
         const ol=p.outlines?p.outlines[i]:p.outline;
         drawPoint(ctx,sx(X[i]),sy(Y[i]),r,sym,col,ol);
       }}
+      ctx.restore();
 
       /* colour bar */
       if(CB){{
@@ -1802,6 +1808,52 @@ P.forEach(function(p){{
   cell.appendChild(hit);
   hit.addEventListener("mousemove",onHover);
   hit.addEventListener("mouseleave",onLeave);
+
+  /* ── zoom & pan, the way the price charts do it: wheel in the plot zooms
+     both axes about the cursor; wheel over an axis strip zooms that axis
+     alone; drag in the plot pans; drag along an axis stretches it;
+     double-click resets to the data. ── */
+  if(p.type==="scatter"){{
+    const inPlot=(x,y)=>x>=_pad.left&&x<=_pad.left+_pW&&y>=_pad.top&&y<=_pad.top+_pH;
+    const zone=(x,y)=>inPlot(x,y)?"plot":(y>_pad.top+_pH&&x>=_pad.left?"x":(x<_pad.left&&y<=_pad.top+_pH?"y":""));
+    const cur=()=>VIEW||{{x0:_xMin,x1:_xMax,y0:_yMin,y1:_yMax}};
+    const dx=px=>_xMin+(px-_pad.left)/_pW*(_xMax-_xMin);
+    const dy=py=>_yMax-(py-_pad.top)/_pH*(_yMax-_yMin);
+    const scale=(v,fx,fy,ax,ay)=>({{x0:ax+(v.x0-ax)*fx,x1:ax+(v.x1-ax)*fx,y0:ay+(v.y0-ay)*fy,y1:ay+(v.y1-ay)*fy}});
+    const pos=e=>{{const r=hit.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}};
+    hit.addEventListener("wheel",function(e){{
+      if(!_pad)return;const [x,y]=pos(e);const z=zone(x,y);if(!z)return;
+      e.preventDefault();
+      const f=e.deltaY>0?1.12:1/1.12;
+      VIEW=scale(cur(),z==="y"?1:f,z==="x"?1:f,dx(x),dy(y));
+      draw();
+    }},{{passive:false}});
+    let drag=null;
+    hit.addEventListener("pointerdown",function(e){{
+      if(!_pad)return;const [x,y]=pos(e);const z=zone(x,y);if(!z)return;
+      drag={{z:z,x:x,y:y,v:cur()}};
+      try{{hit.setPointerCapture(e.pointerId);}}catch(err){{}}
+      e.preventDefault();
+    }});
+    hit.addEventListener("pointermove",function(e){{
+      if(!_pad)return;const [x,y]=pos(e);
+      if(!drag){{const z=zone(x,y);hit.style.cursor=z==="x"?"ew-resize":z==="y"?"ns-resize":"crosshair";return;}}
+      const v=drag.v;
+      if(drag.z==="plot"){{
+        const mx=(x-drag.x)*(v.x1-v.x0)/_pW,my=(y-drag.y)*(v.y1-v.y0)/_pH;
+        VIEW={{x0:v.x0-mx,x1:v.x1-mx,y0:v.y0+my,y1:v.y1+my}};
+      }}else if(drag.z==="x"){{
+        VIEW=scale(v,Math.exp(-(x-drag.x)/200),1,(v.x0+v.x1)/2,0);
+      }}else{{
+        VIEW=scale(v,1,Math.exp((y-drag.y)/200),0,(v.y0+v.y1)/2);
+      }}
+      draw();
+    }});
+    const endDrag=function(){{drag=null;}};
+    hit.addEventListener("pointerup",endDrag);
+    hit.addEventListener("pointercancel",endDrag);
+    hit.addEventListener("dblclick",function(){{VIEW=null;draw();}});
+  }}
 }});
 
 /* ── date scrubber: redraw every framed panel on move ── */
