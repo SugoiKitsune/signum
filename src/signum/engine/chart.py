@@ -331,6 +331,7 @@ class Chart:
         self._alloc_tooltip: Optional[Dict[str, Any]] = None
         self._seasonality_config: Optional[Dict[str, Any]] = None
         self._cone_config: Optional[Dict[str, Any]] = None
+        self._rebase_config: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -2004,6 +2005,131 @@ class Chart:
         })
         return self
 
+    def rebase_control(
+        self,
+        start: Optional[Any] = None,
+        end: Optional[Any] = None,
+        base: float = 100.0,
+        series: Optional[List[int]] = None,
+        mode: str = "ratio",
+        presets: Optional[Any] = ("1Y", "YTD", "MAX", "years"),
+        slider: bool = True,
+        picker: bool = True,
+        tags: bool = True,
+        color: Optional[str] = None,
+    ) -> "Chart":
+        """Re-index the curves on the chart to ``base`` from a movable start date.
+
+        Shifting the start of a strategy is the same as rebasing its equity
+        curve at that date: each curve is divided by its value on the first
+        bar of the window and scaled to ``base``, so "what if I had started in
+        2023" is one drag away.  Runs entirely in the page, no callbacks.
+
+        Adds a slim bar above the plot: the window's two dates flank a start
+        slider, with one preset menu on the right.  Applies to
+        every line / area / baseline series
+        added *before* this call, unless ``series=`` picks a subset::
+
+            (Chart(theme="light", height=420)
+             .area(strategy_eq, name="Strategy")
+             .line(bh_eq, name="S&P 500")
+             .rebase_control(start="2023-01-01"))
+
+        Parameters
+        ----------
+        start, end : date-like, optional
+            Initial window.  Default: the whole range.
+        base : float
+            Value the curves are re-indexed to at the start (default 100).
+        series : list of int, optional
+            Indices of the series to rebase (0-based, in the order added).
+            Default: every line / area / baseline series on the chart.
+        mode : {"ratio", "diff"}
+            ``"ratio"`` for compounded levels (equity, prices): ``v / v0 * base``.
+            ``"diff"`` for additive P&L: ``v - v0 + base``.
+        presets : sequence, optional
+            Entries of the menu at the right of the bar, in order: trailing
+            windows such as ``"1Y"`` / ``"3Y"`` / ``"6M"``, ``"YTD"``,
+            ``"MAX"``, an ``int`` year, or ``"years"`` for one entry per
+            calendar year in the data (a full Jan-Dec window).  ``None`` for
+            no menu.
+        slider : bool
+            Start-date slider between the two dates.
+        picker : bool
+            Make the two dates clickable date pickers.
+        tags : bool
+            Show each curve's ending value as a label on the right axis.
+        color : str, optional
+            Accent colour (slider thumb, active preset).  Default: the first
+            rebased series' colour.
+        """
+        curve_types = ("LineSeries", "AreaSeries", "BaselineSeries")
+        if series is None:
+            targets = [i for i, s in enumerate(self._series) if s["type"] in curve_types]
+        else:
+            targets = [i if i >= 0 else len(self._series) + i for i in series]
+            for i in targets:
+                if not 0 <= i < len(self._series) or self._series[i]["type"] not in curve_types:
+                    raise ValueError(
+                        f"rebase_control: series {i} is not a line / area / baseline series"
+                    )
+        if not targets:
+            raise ValueError("rebase_control: add a line / area / baseline series first")
+        if mode not in ("ratio", "diff"):
+            raise ValueError(f"rebase_control: mode must be 'ratio' or 'diff', got {mode!r}")
+
+        times = sorted({d["time"] for i in targets for d in self._series[i]["data"]})
+        if not times:
+            raise ValueError("rebase_control: the rebased series have no data")
+        years = sorted({t[:4] for t in times})
+
+        tokens: List[str] = []
+        for p in (presets or ()):
+            if isinstance(p, int):
+                tokens.append(str(p))
+                continue
+            p = str(p).strip().upper()
+            if p == "YEARS":
+                tokens.extend(reversed(years))
+            elif p in ("YTD", "MAX") or re.fullmatch(r"\d{4}|\d+[YM]", p):
+                tokens.append(p)
+            else:
+                raise ValueError(
+                    f"rebase_control: unknown preset {p!r} - use 'years', a year, "
+                    "'1Y' / '6M' style windows, 'YTD' or 'MAX'"
+                )
+
+        if tags:
+            for i in targets:
+                self._series[i]["options"]["lastValueVisible"] = True
+
+        if color is None:
+            o = self._series[targets[0]]["options"]
+            color = o.get("color") or o.get("lineColor") or o.get("topLineColor") or "#a0c4ff"
+
+        def _iso(x):
+            return None if x is None else pd.Timestamp(x).strftime("%Y-%m-%d")
+
+        # series.data() in the page drops whitespace rows, so the NaN holes
+        # travel separately and are put back before the window is cut.
+        gaps = [[d["time"] for d in self._series[i]["data"] if "value" not in d] for i in targets]
+        self._rebase_config = {
+            "targets": targets,
+            "gaps": gaps,
+            "base": float(base),
+            "mode": mode,
+            "from": _iso(start),
+            "to": _iso(end),
+            "first": times[0],
+            "last": times[-1],
+            "n": len(times),
+            "presets": tokens,
+            "slider": bool(slider),
+            "picker": bool(picker),
+            "color": color,
+        }
+        return self
+
     def background_image(
         self,
         url: str,
@@ -2366,6 +2492,222 @@ class Chart:
       _applyFmt();
     })();
 """
+
+    # ── Rebase control ────────────────────────────────────────────────────
+
+    _REBASE_JS = r"""
+    // ── Rebase control: pick a window, curves re-index to base at its start ──
+    const _rbCfg = __CFG__;
+    const _rbS = [__SERIES__];
+    const _rbRaw = _rbS.map((s, k) => s.data().map(d => ({time: d.time, value: d.value}))
+        .concat(_rbCfg.gaps[k].map(t => ({time: t}))).sort((a, b) => a.time < b.time ? -1 : 1));
+    const _rbTimes = (() => {
+        const set = new Set();
+        for (const arr of _rbRaw) for (const d of arr) set.add(d.time);
+        return Array.from(set).sort();
+    })();
+    const _rbFirst = _rbTimes[0], _rbLast = _rbTimes[_rbTimes.length - 1];
+    let _rbFrom = _rbFirst, _rbTo = _rbLast;
+    const _rbEl = id => document.getElementById(id);
+    // Snap a calendar date onto the first bar at or after it (or the last bar
+    // at or before it) so a preset landing on a weekend still finds data.
+    function _rbSnap(t, back) {
+        if (!t) return back ? _rbLast : _rbFirst;
+        if (!back) { for (const x of _rbTimes) if (x >= t) return x; return _rbLast; }
+        for (let i = _rbTimes.length - 1; i >= 0; i--) if (_rbTimes[i] <= t) return _rbTimes[i];
+        return _rbFirst;
+    }
+    function _rbWindow(p) {
+        if (p === 'YTD') return [_rbSnap(_rbLast.slice(0, 4) + '-01-01'), _rbLast];
+        if (/^\d{4}$/.test(p)) return [_rbSnap(p + '-01-01'), _rbSnap(p + '-12-31', true)];
+        const m = /^(\d+)([YM])$/.exec(p);
+        if (m) {
+            const d = new Date(_rbLast + 'T00:00:00Z');
+            if (m[2] === 'Y') d.setUTCFullYear(d.getUTCFullYear() - +m[1]);
+            else d.setUTCMonth(d.getUTCMonth() - +m[1]);
+            return [_rbSnap(d.toISOString().slice(0, 10)), _rbLast];
+        }
+        return [_rbFirst, _rbLast];
+    }
+    function _rbApply(from, to) {
+        from = _rbSnap(from); to = _rbSnap(to, true);
+        if (from > to) { const t = from; from = to; to = t; }
+        _rbFrom = from; _rbTo = to;
+        _rbS.forEach((s, k) => {
+            const win = _rbRaw[k].filter(d => d.time >= from && d.time <= to);
+            const a = win.find(d => d.value != null && isFinite(d.value));
+            let out = [];
+            if (a) {
+                const diff = _rbCfg.mode === 'diff';
+                const off = _rbCfg.base - a.value;
+                const f = a.value ? _rbCfg.base / a.value : 0;
+                out = win.map(d => d.value == null ? {time: d.time}
+                    : {time: d.time, value: diff ? d.value + off : d.value * f});
+            }
+            s.setData(out);
+        });
+        try { chart.timeScale().fitContent(); } catch (e) {}
+        const fi = _rbEl('rb-from'), ti = _rbEl('rb-to'), sl = _rbEl('rb-slider');
+        if (fi) fi.value = from;
+        if (ti) ti.value = to;
+        if (sl) {
+            const i = _rbTimes.indexOf(from), pct = 100 * i / Math.max(1, _rbTimes.length - 1);
+            sl.value = i;
+            sl.style.setProperty('--rb-p', pct.toFixed(2) + '%');
+        }
+        // The menu button reads as the active preset, or "range" when the
+        // window is hand-picked; the matching item is tinted in the list.
+        let hit = null;
+        for (const b of document.querySelectorAll('[data-rb]')) {
+            const w = _rbWindow(b.dataset.rb), on = w[0] === from && w[1] === to;
+            b.style.color = on ? _rbCfg.color : _rbCfg.fg;
+            if (on && !hit) hit = b.dataset.rb;
+        }
+        const mb = _rbEl('rb-mbtn');
+        if (mb) {
+            mb.firstChild.textContent = hit || 'range';
+            mb.style.color = hit ? _rbCfg.color : _rbCfg.dim;
+            mb.style.borderColor = hit ? _rbCfg.color : _rbCfg.br;
+        }
+    }
+    {
+        const fi = _rbEl('rb-from'), ti = _rbEl('rb-to'), sl = _rbEl('rb-slider');
+        const mb = _rbEl('rb-mbtn'), ml = _rbEl('rb-mlist');
+        // The date fields are plain text with the native icon hidden; a click
+        // anywhere on them opens the picker (where the browser allows it).
+        for (const el of [fi, ti]) if (el) el.addEventListener('click', () => {
+            try { if (el.showPicker) el.showPicker(); } catch (e) {}
+        });
+        if (fi) fi.addEventListener('change', () => _rbApply(fi.value, _rbTo));
+        if (ti) ti.addEventListener('change', () => _rbApply(_rbFrom, ti.value));
+        if (sl) sl.addEventListener('input', () => {
+            const from = _rbTimes[+sl.value];
+            _rbApply(from, from > _rbTo ? _rbLast : _rbTo);
+        });
+        if (mb && ml) {
+            mb.addEventListener('click', e => { e.stopPropagation(); ml.hidden = !ml.hidden; });
+            ml.addEventListener('click', e => e.stopPropagation());
+            document.addEventListener('click', () => { ml.hidden = true; });
+            document.addEventListener('keydown', e => { if (e.key === 'Escape') ml.hidden = true; });
+        }
+        for (const b of document.querySelectorAll('[data-rb]')) {
+            b.addEventListener('click', () => {
+                const w = _rbWindow(b.dataset.rb); _rbApply(w[0], w[1]);
+                if (ml) ml.hidden = true;
+            });
+        }
+        _rbApply(_rbCfg.from, _rbCfg.to);
+    }
+"""
+
+    def _build_rebase(self, is_dark: bool):
+        """Return (html, js, extra_height) for the rebase bar above the plot."""
+        cfg = self._rebase_config
+        if not cfg:
+            return "", "", 0
+
+        fg = "rgba(255,255,255,0.88)" if is_dark else "rgba(0,0,0,0.78)"
+        dim = "rgba(255,255,255,0.45)" if is_dark else "rgba(0,0,0,0.40)"
+        br = "rgba(255,255,255,0.16)" if is_dark else "rgba(0,0,0,0.14)"
+        rail = "rgba(255,255,255,0.14)" if is_dark else "rgba(0,0,0,0.12)"
+        knob = "#e8e8ec" if is_dark else "#1e1e22"
+        mono = "font:11px/1 'SF Mono','Consolas',monospace"
+        small = "font:10px/1 'SF Mono','Consolas',monospace"
+        panel = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.06)"
+        # The list floats over the canvas, so it needs the canvas colour, not
+        # a translucent one, behind its rows.
+        solid = (self._theme.get("chart", {}).get("layout", {})
+                 .get("background", {}).get("color", ""))
+        if not solid.startswith("#"):
+            solid = "#1e1e1e" if is_dark else "#ffffff"
+        extra = 36
+
+        # ── The two dates flank the slider: plain text, click to pick ─────
+        # The native calendar icon is hidden and the segments read as one
+        # mono date; ``picker=False`` leaves them as read-only text.
+        date_css = (f"border:none;background:transparent;color:{fg};{mono};padding:0;"
+                    f"outline:none;cursor:{'pointer' if cfg['picker'] else 'default'}")
+        ro = "" if cfg["picker"] else " readonly"
+        date = f'type="date" min="{cfg["first"]}" max="{cfg["last"]}" style="{date_css}"{ro}'
+        parts = [f'<input id="rb-from" {date} title="Start of the window">']
+        if cfg["slider"]:
+            parts.append(
+                f'<input id="rb-slider" type="range" min="0" max="{cfg["n"] - 1}" step="1" '
+                f'title="Drag to move the start">'
+            )
+        else:
+            parts.append(f'<span style="flex:1;height:1px;background:{rail}"></span>')
+        parts.append(f'<input id="rb-to" {date} title="End of the window">')
+
+        # ── One small menu for every preset: windows first, then years ────
+        # The button shows the active preset (or "range"); the list floats
+        # under it, right-aligned so it never runs off the bar's edge.
+        if cfg["presets"]:
+            chevron = ('<svg width="8" height="8" viewBox="0 0 8 8" style="margin-left:5px;'
+                       'flex:none"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" '
+                       'stroke-width="1.4" stroke-linecap="round"/></svg>')
+            item = (f"border:none;background:transparent;color:{fg};{small};padding:5px 10px;"
+                    f"text-align:left;border-radius:4px;cursor:pointer;white-space:nowrap")
+            rows = []
+            for k, tok in enumerate(cfg["presets"]):
+                # A hairline between the trailing windows and the years.
+                if k and tok.isdigit() != cfg["presets"][k - 1].isdigit():
+                    rows.append(f'<i style="display:block;height:1px;margin:3px 6px;background:{br}"></i>')
+                rows.append(f'<button data-rb="{tok}" style="{item}">{tok}</button>')
+            parts.append(
+                f'<span id="rb-menu" style="position:relative;margin-left:6px;display:inline-flex">'
+                f'<button id="rb-mbtn" title="Preset windows" style="display:inline-flex;'
+                f'align-items:center;border:1px solid {br};border-radius:4px;color:{dim};{small};'
+                f'padding:3px 6px 3px 8px;outline:none;cursor:pointer;background:transparent;'
+                f'min-width:52px;justify-content:space-between"><span>range</span>{chevron}</button>'
+                f'<div id="rb-mlist" hidden style="position:absolute;right:0;top:calc(100% + 4px);'
+                f'z-index:30;padding:4px;min-width:64px;'
+                f'max-height:260px;overflow-y:auto;background:{solid};border:1px solid {br};'
+                f'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,{"0.45" if is_dark else "0.18"})">'
+                + "".join(rows) + "</div></span>"
+            )
+
+        # Thin rail + round knob, the same shapes as the season brush.  The
+        # window (knob to the right end) is the lit stretch, set via --rb-p.
+        css = (
+            "<style>"
+            "#rb-slider{-webkit-appearance:none;appearance:none;flex:1;min-width:60px;"
+            "height:14px;margin:0;background:transparent;cursor:ew-resize;outline:none}"
+            "#rb-slider::-webkit-slider-runnable-track{height:4px;border-radius:2px;"
+            f"background:linear-gradient(to right,{rail} var(--rb-p,0%),{fg} var(--rb-p,0%))}}"
+            "#rb-slider::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;"
+            f"margin-top:-4.5px;border-radius:50%;background:{knob};border:1px solid {br};"
+            "box-shadow:0 1px 3px rgba(0,0,0,0.35)}"
+            f"#rb-slider::-moz-range-track{{height:4px;border-radius:2px;background:{fg}}}"
+            f"#rb-slider::-moz-range-progress{{height:4px;border-radius:2px;background:{rail}}}"
+            f"#rb-slider::-moz-range-thumb{{width:13px;height:13px;border-radius:50%;"
+            f"background:{knob};border:1px solid {br}}}"
+            "#rb-from::-webkit-calendar-picker-indicator,#rb-to::-webkit-calendar-picker-indicator"
+            "{display:none}"
+            "#rb-from::-webkit-datetime-edit,#rb-to::-webkit-datetime-edit{padding:0}"
+            f"#rb-from:hover,#rb-to:hover{{color:{fg};text-decoration:underline dotted {dim}}}"
+            f"#rb-mbtn:hover,#rb-mlist button:hover{{background:{panel}}}"
+            # display lives here, not inline, so the hidden attribute can win.
+            "#rb-mlist{display:flex;flex-direction:column;gap:1px}"
+            "#rb-mlist[hidden]{display:none}"
+            "</style>"
+        )
+        html = (
+            css
+            + f'<div id="rb-bar" style="position:relative;z-index:6;height:{extra}px;'
+            f'display:flex;align-items:center;gap:10px;padding:4px 12px;white-space:nowrap">'
+            + "".join(parts) + "</div>"
+        )
+        payload = {
+            "base": cfg["base"], "mode": cfg["mode"], "from": cfg["from"], "to": cfg["to"],
+            "gaps": cfg["gaps"], "color": cfg["color"], "fg": fg, "dim": dim, "br": br,
+        }
+        js = (
+            self._REBASE_JS
+            .replace("__CFG__", self._json(payload))
+            .replace("__SERIES__", ",".join(f"s{i}" for i in cfg["targets"]))
+        )
+        return html, js, extra
 
     def _build_seasonality(self, is_dark: bool):
         """Return (html, js, extra_height) for the season brush + controls."""
@@ -3121,8 +3463,10 @@ class Chart:
 
         season_html, season_js, season_extra = self._build_seasonality(is_dark_bg)
         cone_html, cone_js, cone_extra = self._build_cone(is_dark_bg)
+        rebase_html, rebase_js, rebase_extra = self._build_rebase(is_dark_bg)
 
-        total_extra = slider_extra_height + smoothing_extra_height + season_extra + cone_extra
+        total_extra = (slider_extra_height + smoothing_extra_height + season_extra
+                       + cone_extra + rebase_extra)
         self._slider_extra_height = total_extra
 
         _resize_js = """
@@ -3193,7 +3537,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 #signum-logo{{position:absolute;right:12px;bottom:4px;z-index:5;opacity:0.7;pointer-events:none;{_logo_invert}}}
 </style>
 </head><body>
-{bg_svg}{_glass_open}{season_html}<div id="fc"></div>
+{bg_svg}{_glass_open}{season_html}{rebase_html}<div id="fc"></div>
 {_kmb_overlay}
 {stats_html}
 {alloc_tooltip_html}
@@ -3212,6 +3556,7 @@ try {{
     {cone_js}
     {slider_js}
     {smoothing_js}
+    {rebase_js}
     {alloc_tooltip_js}
 }} catch(e) {{
     var el = document.getElementById('err');

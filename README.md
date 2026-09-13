@@ -39,6 +39,7 @@ chart  # renders inline in Jupyter
 
 - **Series** — `candlestick`, `bar`, `line`, `area`, `baseline`, `histogram`, `volume`, `allocation`, `seasonality` (years overlaid on one Jan–Dec axis, with a season brush), `projection_cone` (bootstrap cone past an embargo, realized path over it, live embargo slider)
 - **Annotations** — `price_line`, `hline`, `marker`, `signals`, `shade`, `set_watermark`
+- **Controls** — `threshold_control`, `smoothing_control`, `rebase_control` (compare curves from a movable start date — see below); all run in the page, no callbacks
 - **StatChart** — `distribution` (histogram + KDE), `scatter`, `curve` (fitted line + confidence band + date slider), `spread`
 - **Themes** — `dark` (default), `light`, `ft`, `midnight`, `rome`, `glass`, `notion-dark`, `notion-light`
 - **Dashboard** — multi-pane sync (crosshair, zoom, scroll)
@@ -77,6 +78,27 @@ chart = (
     .hline(50, label="50%", style=2)  # Add reference line
 )
 ```
+
+## Compare From
+
+`rebase_control()` re-indexes every curve on the chart to 100 at a movable start
+date — shifting where a strategy starts is the same as rebasing its equity there.
+A slim bar above the plot: the window's two dates (click to pick) flank a start
+slider, and one small menu on the right holds the presets — `1Y`, `YTD`, `MAX`,
+then one entry per calendar year; the ending values sit on the right axis.
+Everything runs in the page.
+
+```python
+(
+    Chart(theme="light", height=420)
+    .area(strategy_eq, name="Strategy", color="#22c55e")
+    .line(bh_eq, name="S&P 500", color="#64748b")
+    .rebase_control(start="2023-01-01")          # presets: 1Y, YTD, MAX, each year
+)
+```
+
+Pass `mode="diff"` for additive P&L, `series=[...]` to rebase only some of the
+curves, `base=1.0` for a growth-of-$1 axis.
 
 ## Dashboard
 
