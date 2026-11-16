@@ -541,8 +541,18 @@ class Chart:
             self._series[-1]["_value_line"] = {"line": line, "tag": tag}
         return self
 
-    def volume(self, df: pd.DataFrame, **options) -> "Chart":
-        """Add volume histogram overlaid at the bottom 20% of the chart."""
+    def volume(self, df: pd.DataFrame, reserve: bool = False, pin: Optional[tuple] = None, **options) -> "Chart":
+        """Add volume histogram overlaid at the bottom 20% of the chart.
+
+        reserve : when True, also give the MAIN price scale a matching bottom margin so a price
+                  line / candles are drawn above the bars instead of through them. Off by default
+                  so existing candlestick+volume charts render exactly as before. Call it AFTER
+                  the price series has been added.
+        pin     : optional (lo, hi) to FIX the volume scale. One outlier (an issue's placement day)
+                  otherwise sets the scale and flattens every later bar to a sliver; pinning at a high
+                  percentile clips the outliers to full height and keeps ordinary days legible. The
+                  crosshair still reports the true value.
+        """
         df = self._prepare_time(df)
         vcol = self._col_ci(df, "volume")
         ocol = self._col_ci(df, "open")
@@ -560,12 +570,21 @@ class Chart:
             for t, v, clr in zip(df_clean["time"], df_clean[vcol], colors)
         ]
 
+        if reserve:
+            for ser in self._series:      # the first plain price series -> shrink its scale upward
+                if ("price_scale" not in ser and not ser.get("options", {}).get("priceScaleId")
+                        and ser.get("type") in ("LineSeries", "AreaSeries", "CandlestickSeries",
+                                                "BarSeries", "BaselineSeries")):
+                    ser["price_scale"] = {"id": "right", "scaleMargins": {"top": 0.08, "bottom": 0.24}}
+                    break
+
         series_opts = {"priceFormat": {"type": "volume"}, "priceScaleId": "volume", **options}
         self._series.append({
             "type": "HistogramSeries",
             "data": records,
             "options": series_opts,
-            "price_scale": {"id": "volume", "scaleMargins": {"top": 0.8, "bottom": 0}},
+            "price_scale": {"id": "volume", "scaleMargins": {"top": 0.8, "bottom": 0},
+                            **({"pin": tuple(pin)} if pin else {})},
         })
         return self
 
@@ -692,23 +711,41 @@ class Chart:
         fill = f"rgba({r},{g},{b},{opacity})"
         lbl_clr = label_color or f"rgba({r},{g},{b},{min(1.0, opacity*7):.2f})"
         for ev in events:
+            # A dated POINT (no "end") used to be the same four-point ramp as a period with
+            # start == end — (pre,0) (start,1) (end,1) (post,0). With a zero-width flat top that is
+            # a TRIANGLE: a sloped spike whose width is the 4-day ramp, not the event. A point is a
+            # day, so draw it as one: a stepped area (LineType.WithSteps = 1 in the vendored
+            # lightweight-charts v5.1.0) that holds 1 for exactly one bar -> a vertical band with
+            # square edges. Periods (explicit "end") are unchanged.
+            point = "end" not in ev
             s_ts = pd.Timestamp(ev["start"]); e_ts = pd.Timestamp(ev.get("end", ev["start"]))
             start, end = s_ts.strftime("%Y-%m-%d"), e_ts.strftime("%Y-%m-%d")
             pre = (s_ts - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
-            post = (e_ts + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
             label = ev.get("label", "")
+            if point:
+                nxt = (s_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                post = (s_ts + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+                data = [{"time": pre, "value": 0}, {"time": start, "value": 1},
+                        {"time": nxt, "value": 0}, {"time": post, "value": 0}]
+            else:
+                post = (e_ts + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+                data = [{"time": pre, "value": 0}, {"time": start, "value": 1},
+                        {"time": end, "value": 1}, {"time": post, "value": 0}]
+            opts = {
+                "priceScaleId": "_events", "lineColor": "rgba(0,0,0,0)",
+                "topColor": fill, "bottomColor": fill, "lineWidth": 0,
+                "lastValueVisible": False, "priceLineVisible": False,
+                "crosshairMarkerVisible": False, "pointMarkersVisible": False,
+            }
+            if point: opts["lineType"] = 1          # WithSteps
             self._series.append({
                 "type": "AreaSeries",
                 # 0-anchors before/after pin the hidden scale to span 0..1 so the band fills the FULL height
-                "data": [{"time": pre, "value": 0}, {"time": start, "value": 1},
-                         {"time": end, "value": 1}, {"time": post, "value": 0}],
-                "options": {
-                    "priceScaleId": "_events", "lineColor": "rgba(0,0,0,0)",
-                    "topColor": fill, "bottomColor": fill, "lineWidth": 0,
-                    "lastValueVisible": False, "priceLineVisible": False,
-                    "crosshairMarkerVisible": False, "pointMarkersVisible": False,
-                },
-                "price_scale": {"id": "_events", "scaleMargins": {"top": 0, "bottom": 0}},
+                "data": data,
+                "options": opts,
+                "price_scale": ({"id": "_events", "scaleMargins": {"top": 0, "bottom": 0}, "pin": (0, 1)}
+                                if point else
+                                {"id": "_events", "scaleMargins": {"top": 0, "bottom": 0}}),
             })
             band_idx = len(self._series) - 1     # the band series itself carries the label (top/bottom of chart)
             if label:
