@@ -691,9 +691,16 @@ class Chart:
         label_color: Optional[str] = None,
         series_index: int = 0,
         label_pos: str = "top",
+        style: str = "band",
+        dash: tuple = (4, 4),
     ) -> "Chart":
-        """Highlight named historical periods with a faint full-height band + a small label.
+        """Highlight named historical periods: a shaded full-height band, dashed vertical lines at its edges, a label.
 
+        style     : "band" (default) — drawn on the pane by a primitive: the period is shaded at `opacity`, its start
+                    and end get dashed vertical lines, the label sits at the top-left of the band (rows staggered so
+                    neighbouring labels don't overlap). A point event (no "end") is one dashed line + label.
+                    "legacy" — the old faint area series with a dot label at the top.
+        dash      : dash pattern of the edge lines in px, e.g. (4, 4); () = solid.
         label_pos : "top" (default) or "bottom" — where the label sits in the chart.
 
         events : list of dicts, each ``{"start": date, "end": date (optional), "label": str}``.
@@ -710,6 +717,15 @@ class Chart:
         r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
         fill = f"rgba({r},{g},{b},{opacity})"
         lbl_clr = label_color or f"rgba({r},{g},{b},{min(1.0, opacity*7):.2f})"
+        if style != "legacy":
+            spans = self.__dict__.setdefault("_event_spans", [])
+            for ev in events:
+                spans.append({"s": pd.Timestamp(ev["start"]).strftime("%Y-%m-%d"),
+                              "e": pd.Timestamp(ev["end"]).strftime("%Y-%m-%d") if ev.get("end") else None,
+                              "label": ev.get("label", ""), "fill": fill,
+                              "line": f"rgba({r},{g},{b},{min(1.0, max(0.55, opacity * 6)):.2f})",
+                              "lc": label_color or f"rgba({r},{g},{b},0.95)", "pos": label_pos, "dash": list(dash)})
+            return self
         for ev in events:
             # A dated POINT (no "end") used to be the same four-point ramp as a period with
             # start == end — (pre,0) (start,1) (end,1) (post,0). With a zero-width flat top that is
@@ -2370,7 +2386,60 @@ class Chart:
                     f"{self._json(sorted_markers)});"
                 )
 
+        spans = self.__dict__.get("_event_spans")
+        if spans:
+            host = next((i for i, x in enumerate(self._series)
+                         if x.get("type") != "__price_scale_config__" and x.get("data")
+                         and not str(x.get("options", {}).get("priceScaleId", "")).startswith("_")), None)
+            if host is not None:
+                times = sorted({str(d["time"]) for d in self._series[host]["data"] if "time" in d})
+                import bisect
+                def _snap_fwd(t):                       # first bar on/after t
+                    k = bisect.bisect_left(times, t); return times[k] if k < len(times) else None
+                def _snap_back(t):                      # last bar on/before t
+                    k = bisect.bisect_right(times, t) - 1; return times[k] if k >= 0 else None
+                ev = []
+                for j, e in enumerate(spans):
+                    st = _snap_fwd(e["s"])
+                    en = _snap_back(e["e"]) if e["e"] else None
+                    if st is None or (e["e"] and (en is None or en < st)):
+                        continue
+                    ev.append({**e, "s": st, "e": en, "row": j % 3})
+                if ev:
+                    lines.append(self._EVENTS_JS.replace("__EV__", self._json(ev)).replace("__HOST__", f"{var_prefix}s{host}"))
         return "\n        ".join(lines)
+
+    _EVENTS_JS = r"""
+        (function(){
+          const EV = __EV__;
+          const P = { _c: null, _r: null,
+            attached(p){ this._c = p.chart; this._r = p.requestUpdate; },
+            detached(){ this._c = null; }, updateAllViews(){}, paneViews(){ return [this._v]; } };
+          P._v = { zOrder(){ return 'bottom'; }, renderer(){ return { draw(target){
+            target.useMediaCoordinateSpace(function(scope){
+              if (!P._c) return;
+              const ctx = scope.context, H = scope.mediaSize.height, W = scope.mediaSize.width, ts = P._c.timeScale();
+              for (const e of EV){
+                const x0 = ts.timeToCoordinate(e.s);
+                const x1 = e.e ? ts.timeToCoordinate(e.e) : null;
+                if (x0 === null) continue;
+                if (e.e && x1 !== null){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H); }
+                ctx.save(); ctx.setLineDash(e.dash); ctx.lineWidth = 1; ctx.strokeStyle = e.line;
+                ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
+                if (e.e && x1 !== null){ ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke(); }
+                ctx.restore();
+                if (e.label && x0 > -200 && x0 < W){
+                  ctx.save(); ctx.font = '11px -apple-system, Segoe UI, sans-serif'; ctx.fillStyle = e.lc;
+                  const y = e.pos === 'bottom' ? H - 4 - 13 * e.row : 4 + 13 * e.row;
+                  ctx.textBaseline = e.pos === 'bottom' ? 'bottom' : 'top';
+                  ctx.fillText(e.label, x0 + 4, y); ctx.restore();
+                }
+              }
+            });
+          } }; } };
+          __HOST__.attachPrimitive(P);
+        })();
+    """
 
     # ── Seasonality overlay ───────────────────────────────────────────────
 
