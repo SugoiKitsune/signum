@@ -687,19 +687,22 @@ class Chart:
         self,
         events,
         color: str = "#9aa0b4",
-        opacity: float = 0.07,
+        opacity: Optional[float] = None,
         label_color: Optional[str] = None,
         series_index: int = 0,
         label_pos: str = "top",
         style: str = "band",
+        edges: bool = False,
         dash: tuple = (4, 4),
     ) -> "Chart":
         """Highlight named historical periods: a shaded full-height band, dashed vertical lines at its edges, a label.
 
-        style     : "band" (default) — drawn on the pane by a primitive: the period is shaded at `opacity`, its start
-                    and end get dashed vertical lines, the label sits at the top-left of the band (rows staggered so
-                    neighbouring labels don't overlap). A point event (no "end") is one dashed line + label.
+        style     : "band" (default) — drawn on the pane by a primitive: the period is a shaded (default grey)
+                    full-height background, the label sits at the top-left of the band (rows staggered so neighbouring
+                    labels don't overlap). A point event (no "end") is a thin one-bar line + label.
                     "legacy" — the old faint area series with a dot label at the top.
+        opacity   : band fill opacity (default 0.12 for "band", 0.07 for "legacy").
+        edges     : also draw dashed vertical lines at each event's start / end in `color` (e.g. color="#e74c3c").
         dash      : dash pattern of the edge lines in px, e.g. (4, 4); () = solid.
         label_pos : "top" (default) or "bottom" — where the label sits in the chart.
 
@@ -713,6 +716,8 @@ class Chart:
                 {"start": "2020-02-19", "end": "2020-04-01", "label": "COVID"},
             ])
         """
+        if opacity is None:
+            opacity = 0.07 if style == "legacy" else 0.12
         hexc = color.lstrip("#")
         r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
         fill = f"rgba({r},{g},{b},{opacity})"
@@ -724,7 +729,8 @@ class Chart:
                               "e": pd.Timestamp(ev["end"]).strftime("%Y-%m-%d") if ev.get("end") else None,
                               "label": ev.get("label", ""), "fill": fill,
                               "line": f"rgba({r},{g},{b},{min(1.0, max(0.55, opacity * 6)):.2f})",
-                              "lc": label_color or f"rgba({r},{g},{b},0.95)", "pos": label_pos, "dash": list(dash)})
+                              "lc": label_color or f"rgba({r},{g},{b},0.95)", "pos": label_pos, "dash": list(dash),
+                              "edges": bool(edges)})
             return self
         for ev in events:
             # A dated POINT (no "end") used to be the same four-point ramp as a period with
@@ -2424,10 +2430,13 @@ class Chart:
                 const x1 = e.e ? ts.timeToCoordinate(e.e) : null;
                 if (x0 === null) continue;
                 if (e.e && x1 !== null){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H); }
-                ctx.save(); ctx.setLineDash(e.dash); ctx.lineWidth = 1; ctx.strokeStyle = e.line;
-                ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
-                if (e.e && x1 !== null){ ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke(); }
-                ctx.restore();
+                if (!e.e){ ctx.fillStyle = e.fill; ctx.fillRect(x0 - 1, 0, 3, H); }              // point event: thin band
+                if (e.edges){
+                  ctx.save(); ctx.setLineDash(e.dash); ctx.lineWidth = 1; ctx.strokeStyle = e.line;
+                  ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
+                  if (e.e && x1 !== null){ ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke(); }
+                  ctx.restore();
+                }
                 if (e.label && x0 > -200 && x0 < W){
                   ctx.save(); ctx.font = '11px -apple-system, Segoe UI, sans-serif'; ctx.fillStyle = e.lc;
                   const y = e.pos === 'bottom' ? H - 4 - 13 * e.row : 4 + 13 * e.row;
