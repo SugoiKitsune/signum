@@ -500,10 +500,54 @@ THEMES: Dict[str, dict] = {
     },
 }
 
+def _sfera(bg, ink, ink3, grid, border, cross, line_colors):
+    """The sfera / IFXRPT reader palette (calm, neutral, tabular mono figures) — so a chart embedded
+    in a sfera-styled page has the page's own ground, ink and hairlines instead of a second look."""
+    return {
+        "chart": {
+            "layout": {"background": {"type": "solid", "color": bg}, "textColor": ink3, "fontSize": 11,
+                       "fontFamily": "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace"},
+            "grid": {"vertLines": {"color": "rgba(0,0,0,0)"}, "horzLines": {"color": grid}},
+            "crosshair": {"mode": 0, "vertLine": {"width": 1, "color": cross, "style": 3},
+                          "horzLine": {"width": 1, "color": cross, "style": 3}},
+            "rightPriceScale": {"borderColor": border},
+            "timeScale": {"borderColor": border},
+        },
+        "candlestick": {"upColor": bg, "downColor": ink, "borderUpColor": ink, "borderDownColor": ink,
+                        "wickUpColor": ink, "wickDownColor": ink},
+        "line": {"color": ink, "lineWidth": 2},
+        "line_colors": line_colors,
+        "area": {"topColor": cross, "bottomColor": "rgba(0,0,0,0)", "lineColor": ink, "lineWidth": 2},
+        "baseline": {"topLineColor": ink, "topFillColor1": cross, "topFillColor2": "rgba(0,0,0,0)",
+                     "bottomLineColor": ink3, "bottomFillColor1": "rgba(0,0,0,0)", "bottomFillColor2": cross},
+        "histogram": {"color": ink3},
+        "volume": {"upColor": cross, "downColor": grid},
+    }
+
+
+THEMES["sfera-light"] = _sfera("#FFFFFF", "#191918", "#8E8E88", "#EAEAE7", "#DFDFDA", "rgba(25,25,24,0.22)",
+                               ["#191918", "#3D5A80", "#8E8E88", "#137A55", "#9A6207", "#6f5f96", "#B3261E", "#5C5C57"])
+THEMES["sfera-dark"] = _sfera("#0E0F11", "#E8E8E4", "#75756E", "#232629", "#2C3034", "rgba(232,232,228,0.22)",
+                              ["#E8E8E4", "#8AB0D9", "#A6A69F", "#4CB68B", "#D4A44C", "#a99bd6", "#E8756B", "#75756E"])
+# Holdings palettes (allocation bands). Ten-ish hues of EQUAL weight - none shouts, none vanishes - in
+# the register of a printed annual report: on white they are mid-dark and slightly greyed (the pastel
+# default washes out on a white ground and its gold/magenta jump forward); on the dark ground the same
+# hues lifted so they hold against near-black. Ordered so neighbours in a stack always contrast.
+THEMES["sfera-light"]["alloc_colors"] = [
+    "#4E79A7", "#E08A3C", "#5A9E6F", "#C8574F", "#7A6BA8", "#4FA3A5", "#C9A23A", "#9B6E57",
+    "#D47FA6", "#7F8C3E", "#6C8EBF", "#A0A09A"]
+THEMES["sfera-dark"]["alloc_colors"] = [
+    "#7FA6D3", "#F0A762", "#7DC291", "#E8837A", "#A497D4", "#6FC5C6", "#E4C35F", "#C39478",
+    "#EBA0C2", "#AAB866", "#97B4E0", "#B9B9B2"]
+THEMES["sfera-light"]["fill_up"] = "rgba(19,122,85,0.16)"
+THEMES["sfera-light"]["fill_down"] = "rgba(179,38,30,0.16)"
+THEMES["sfera-dark"]["fill_up"] = "rgba(76,182,139,0.20)"
+THEMES["sfera-dark"]["fill_down"] = "rgba(232,117,107,0.20)"
+
 # Names with a dark ground.  Overlay chrome (sliders, keys, tooltips) picks
 # its contrast from this, so a new dark theme is one entry here, not a hunt
 # through every renderer.
-DARK_THEMES = frozenset({"dark", "midnight", "glass", "notion-dark"})
+DARK_THEMES = frozenset({"dark", "midnight", "glass", "notion-dark", "sfera-dark"})
 
 #: Canonical, ordered tuple of valid theme names — use for introspection /
 #: building UI pickers: ``Chart(theme=signum.THEME_NAMES[0])``.

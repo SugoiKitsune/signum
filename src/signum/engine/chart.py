@@ -332,6 +332,8 @@ class Chart:
         self._seasonality_config: Optional[Dict[str, Any]] = None
         self._cone_config: Optional[Dict[str, Any]] = None
         self._rebase_config: Optional[Dict[str, Any]] = None
+        self._fills: List[Dict[str, Any]] = []
+        self._readout: Optional[Dict[str, Any]] = None
 
     # ── Data Helpers ──────────────────────────────────────────────────────
 
@@ -781,6 +783,54 @@ class Chart:
                 self._markers.setdefault(band_idx, []).append(mk)
         return self
 
+    def live_from(
+        self,
+        start,
+        label: str = "Live",
+        color: str = "#9aa0b4",
+        opacity: Optional[float] = None,
+        edges: bool = True,
+        dash: tuple = (4, 4),
+        hide: bool = False,
+        toggle: bool = True,
+    ) -> "Chart":
+        """Shade everything from ``start`` to the right edge — backtest | live (out-of-sample) boundary.
+
+        A full-height shaded band that runs to the right edge, a dashed vertical line at ``start`` and a label.
+        Same look as ``events()``; the band follows zoom / pan.
+
+        hide   : blind mode — every series is blanked after ``start`` (the time axis keeps its length, so the
+                 shaded area still shows where the live part is, and the y-scale only sees the visible part).
+        toggle : with ``hide=True``, a small button in the chart's corner reveals / re-hides the live part.
+
+        Usage::
+
+            chart.line(equity).live_from("2024-01-01", hide=True)
+        """
+        if opacity is None:
+            opacity = 0.12
+        hexc = color.lstrip("#")
+        r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
+        s = pd.Timestamp(start).strftime("%Y-%m-%d")
+        spans = self.__dict__.setdefault("_event_spans", [])
+        spans.append({"s": s, "e": None, "open": True, "label": label,
+                      "fill": f"rgba({r},{g},{b},{opacity})",
+                      "line": f"rgba({r},{g},{b},{min(1.0, max(0.55, opacity * 6)):.2f})",
+                      "lc": f"rgba({r},{g},{b},0.95)", "pos": "top", "dash": list(dash),
+                      "edges": bool(edges)})
+        if hide:
+            self.__dict__["_live_hide"] = {"cut": s, "toggle": bool(toggle)}
+        return self
+
+    def legend(self, position: str = "top-left") -> "Chart":
+        """Clickable legend (like Plotly): one entry per NAMED series; click to switch a series off / on.
+
+        Series are named via ``name=`` (``line(df, name="SPY")``). A hidden series drops out of the y-autoscale.
+        position : "top-left" (default) | "top-right" | "bottom-left" | "bottom-right".
+        """
+        self.__dict__["_legend"] = position
+        return self
+
     def price_line(
         self,
         price: float,
@@ -945,6 +995,11 @@ class Chart:
         value: Optional[Any] = None,
         base_value: float = 100.0,
         weights_pct: Optional[bool] = None,
+        total: Optional[bool] = None,
+        total_color: Optional[str] = None,
+        currency: str = "",
+        readout: str = "box",
+        fill_mix: Optional[float] = None,
         **options,
     ) -> "Chart":
         """Add multiple allocation series for portfolio visualization.
@@ -997,6 +1052,26 @@ class Chart:
         weights_pct : bool, optional
             Force-interpret the weights as percent (True) or fraction (False). Auto-detected when None
             (percent if any |weight| > 1.5).
+            "amount" — the columns ARE money (e.g. each strategy's £ value). Bands stack the amounts
+            as given — positives up from 0, negatives down from 0 — so a book whose parts include a
+            negative one (an overdrawn cash sleeve) is still drawn faithfully: the coloured stack shows
+            the gross long and short, and the ``total`` line shows the true net, which is what the
+            portfolio is worth. The axis and tooltip read in ``currency`` with each part's share of net.
+        total : bool, optional
+            Overlay the net sum of all columns as a bold line ("Total"). Default: on for mode="amount".
+        total_color : str, optional
+            Colour of the total line (default: the theme's ink / main line colour).
+        currency : str, default ""
+            Prefix for amounts on the axis and in the tooltip in mode="amount", e.g. "£".
+        fill_mix : float, optional
+            Stacked fills only: how much of each holding's colour is mixed into the chart background
+            (0-1). The result stays OPAQUE (bands never bleed through one another) but reads as a
+            tint, with the band's top edge drawn in the full colour. Default: 1.0 (solid) except in
+            mode="amount", where it is 0.62 on a light ground and 0.48 on a dark one - full-strength
+            stacks of ten-plus hues glare, worst on dark.
+        readout : {"box", "bottom"}, default "box"
+            Where the per-holding values for the hovered day are shown: the floating box over the plot,
+            or a legend strip UNDER the chart (keeps the plot clear; shows the latest day when idle).
         **options
             Additional LightweightCharts series options.
         
@@ -1026,8 +1101,11 @@ class Chart:
             raise ValueError("No allocation columns found. Specify allocation_cols explicitly.")
 
         mode = (mode or "weights").lower()
-        if mode not in ("weights", "value"):
-            raise ValueError("mode must be 'weights' (sum-to-target each day) or 'value' (compounds with NAV)")
+        if mode not in ("weights", "value", "amount"):
+            raise ValueError("mode must be 'weights' (sum-to-target each day), 'value' (compounds with NAV) "
+                             "or 'amount' (the columns are money; stacked as given)")
+        if total is None:
+            total = mode == "amount"
 
         # Are the weights in percent (0-100) or fraction (0-1)? Governs value-mode scaling + tooltip %.
         _wmax = float(np.nanmax(np.abs(df[allocation_cols].to_numpy(dtype=float)))) if len(df) else 0.0
@@ -1053,7 +1131,7 @@ class Chart:
 
         # Colours: the palette above, extended (never repeated) to however many
         # holdings there are, then overridden per name by color_map.
-        base_palette = _ALLOC_PALETTE if colors is None else list(colors)
+        base_palette = (self._theme.get("alloc_colors") or _ALLOC_PALETTE) if colors is None else list(colors)
         colors = _alloc_colors(len(allocation_cols), base_palette)
         if color_map:
             colors = [color_map.get(col, colors[i]) for i, col in enumerate(allocation_cols)]
@@ -1141,6 +1219,17 @@ class Chart:
                     # through 0 and crosses over neighboring bands.
                     soft_line = f"rgba({r},{g},{b},0.85)" if r is not None else base_color
                     solid_fill = f"rgba({r},{g},{b},1.0)" if r is not None else base_color
+                    _mix = fill_mix
+                    if _mix is None and mode == "amount":
+                        _mix = 0.48 if self._theme_name in DARK_THEMES else 0.62
+                    if _mix is not None and r is not None and _mix < 1.0:
+                        _bg = str(self._theme.get("chart", {}).get("layout", {}).get("background", {})
+                                  .get("color", "#ffffff")).lstrip("#")
+                        if len(_bg) == 6:
+                            br, bgc, bb = int(_bg[0:2], 16), int(_bg[2:4], 16), int(_bg[4:6], 16)
+                            m = lambda c, k: int(round(c * _mix + k * (1 - _mix)))  # noqa: E731
+                            solid_fill = f"rgb({m(r, br)},{m(g, bgc)},{m(b, bb)})"
+                            soft_line = f"rgba({r},{g},{b},1.0)"
                     
                     series_opts = {
                         "baseValue": {"type": "price", "price": 0},
@@ -1212,6 +1301,8 @@ class Chart:
             # After _prepare_time, dates are in "YYYY-MM-DD" string format
             alloc_data = {}
             _pmul = 100.0 if (mode == "value" and not _is_pct) else 1.0  # value-mode fractions → report as %
+            if mode == "amount":
+                _pmul = 1.0
             for _, row in df.iterrows():
                 date_key = str(row["time"])  # Already a string from _prepare_time
                 alloc_data[date_key] = {col: float(row[col]) * _pmul if pd.notna(row[col]) else 0.0
@@ -1222,8 +1313,26 @@ class Chart:
                 "colors": list(colors),
                 "data": alloc_data,
                 "hide_zero": hide_zero,
+                "unit": "amount" if mode == "amount" else "percent",
+                "currency": currency,
             }
+            if readout == "bottom":
+                self._readout = {"kind": "alloc", **self._alloc_tooltip,
+                                 "total": bool(total), "ink": total_color or self._theme.get("line", {}).get("color")}
+                self._alloc_tooltip = None
         
+        # Net total over the stack: the one line that says what the whole is worth when parts are negative.
+        if total:
+            _net = plot_df[allocation_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=1)
+            _tc = total_color or self._theme.get("line", {}).get("color", "#1a1a1a")
+            self._series.append({
+                "type": "LineSeries",
+                "data": [{"time": t, "value": float(v)} for t, v in zip(plot_df["time"], _net)],
+                "options": {"color": _tc, "lineWidth": 2, "title": "Total", "priceScaleId": "right",
+                            "priceLineVisible": False, "lastValueVisible": True,
+                            "crosshairMarkerRadius": 3},
+            })
+
         # Configure right price scale with percentage formatting
         if stacked and series_type == "AreaSeries":
             self._series.append({
@@ -1235,9 +1344,66 @@ class Chart:
                     "borderVisible": False,
                     "scaleMargins": {"top": 0.05, "bottom": 0.05},
                 },
-                "formatter": "value" if mode == "value" else "percent"
+                "formatter": {"value": "value", "amount": "amount"}.get(mode, "percent"),
+                "currency": currency,
             })
         
+        return self
+
+    def fill_between(
+        self,
+        df: pd.DataFrame,
+        value_col: str = "value",
+        ref_col: str = "ref",
+        name: str = "Value",
+        ref_name: str = "Reference",
+        up_color: Optional[str] = None,
+        down_color: Optional[str] = None,
+        line_color: Optional[str] = None,
+        ref_color: Optional[str] = None,
+        currency: str = "",
+        readout: bool = True,
+    ) -> "Chart":
+        """A value line against a reference line, the gap between them shaded by sign.
+
+        The classic "portfolio vs money put in" view: green where ``value`` is above ``ref`` (a gain),
+        red where it is below (a loss), the reference dashed. The shading is drawn by a pane primitive
+        straight from the two series, so it is exact at every crossing (each segment that changes sign
+        is split at the intersection) and the grid stays visible underneath.
+
+        df : DataFrame with a time column and the two value columns.
+        readout : show the hovered day's value, reference and gap in a strip under the chart.
+        """
+        df = self._prepare_time(df)
+        ink = line_color or self._theme.get("line", {}).get("color", "#1a1a1a")
+        ref_c = ref_color or self._theme.get("chart", {}).get("layout", {}).get("textColor", "#8a8a8a")
+        def pts(col):
+            t = df[["time", col]].dropna()
+            return [{"time": a, "value": float(b)} for a, b in zip(t["time"], t[col])]
+        i_ref = len(self._series)
+        self._series.append({"type": "LineSeries", "data": pts(ref_col), "options": {
+            "color": ref_c, "lineWidth": 1, "lineStyle": 2, "title": ref_name, "priceLineVisible": False,
+            "lastValueVisible": True, "crosshairMarkerRadius": 2}})
+        i_val = len(self._series)
+        self._series.append({"type": "LineSeries", "data": pts(value_col), "options": {
+            "color": ink, "lineWidth": 2, "title": name, "priceLineVisible": False, "lastValueVisible": True,
+            "crosshairMarkerRadius": 3}})
+        self._fills.append({"a": i_val, "b": i_ref,
+                            "up": up_color or self._theme.get("fill_up", "rgba(38,166,91,0.18)"),
+                            "down": down_color or self._theme.get("fill_down", "rgba(239,83,80,0.18)")})
+        if currency:
+            self._series.append({"type": "__price_scale_config__", "scale_id": "right",
+                                 "options": {"mode": 0, "visible": True, "borderVisible": False,
+                                             "scaleMargins": {"top": 0.08, "bottom": 0.05}},
+                                 "formatter": "amount", "currency": currency})
+        if readout:
+            data = {}
+            vals = df.set_index("time")
+            for t, row in vals[[value_col, ref_col]].iterrows():
+                if pd.notna(row[value_col]) and pd.notna(row[ref_col]):
+                    data[str(t)] = {name: float(row[value_col]), ref_name: float(row[ref_col])}
+            self._readout = {"kind": "fill", "assets": [name, ref_name], "colors": [ink, ref_c], "data": data,
+                             "currency": currency, "unit": "amount", "gap": "P&L"}
         return self
 
     def seasonality(
@@ -2330,6 +2496,8 @@ class Chart:
 
     def _build_series_js(self, var_prefix: str = "", chart_var: str = "chart") -> str:
         lines = []
+        if self.__dict__.get("_live_hide"):
+            lines.append("const _liveReg = [];")
         for i, s in enumerate(self._series):
             # Special handling for price scale configuration (not a real series)
             if s.get("type") == "__price_scale_config__":
@@ -2339,6 +2507,16 @@ class Chart:
                         f"{chart_var}.applyOptions({{"
                         f"localization: {{"
                         f"priceFormatter: (price) => price.toFixed(0) + '%'"
+                        f"}}}});"
+                    )
+                elif s.get("formatter") == "amount":
+                    _cur = json.dumps(s.get("currency") or "")
+                    lines.append(
+                        f"{chart_var}.applyOptions({{"
+                        f"localization: {{"
+                        f"priceFormatter: (p) => (p < 0 ? '-' : '') + {_cur} + "
+                        f"(Math.abs(p) >= 1e6 ? (Math.abs(p)/1e6).toFixed(2)+'m' : "
+                        f"Math.abs(p) >= 1000 ? (Math.abs(p)/1000).toFixed(0)+'k' : Math.abs(p).toFixed(0))"
                         f"}}}});"
                     )
                 elif s.get("formatter") == "value":
@@ -2360,7 +2538,20 @@ class Chart:
                 f"const {var} = {chart_var}.addSeries(LightweightCharts.{s['type']}, "
                 f"{self._json(s['options'])});"
             )
-            lines.append(f"{var}.setData({self._json(s['data'])});")
+            live = self.__dict__.get("_live_hide")
+            data_i = s["data"]
+            if live and not str(s.get("options", {}).get("priceScaleId", "")).startswith("_"):
+                cut = live["cut"]
+                head = [d for d in data_i if not (isinstance(d.get("time"), str) and d["time"] >= cut)]
+                tail = [d for d in data_i if isinstance(d.get("time"), str) and d["time"] >= cut]
+                if tail:
+                    # blank the live part to whitespace: the time axis keeps its length, autoscale ignores it
+                    lines.append(f"{var}.setData({self._json(head + [{'time': d['time']} for d in tail])});")
+                    lines.append(f"_liveReg.push([{var}, {self._json(head)}, {self._json(tail)}]);")
+                else:
+                    lines.append(f"{var}.setData({self._json(data_i)});")
+            else:
+                lines.append(f"{var}.setData({self._json(data_i)});")
 
             if "price_scale" in s:
                 ps = s["price_scale"]
@@ -2413,7 +2604,101 @@ class Chart:
                     ev.append({**e, "s": st, "e": en, "row": j % 3})
                 if ev:
                     lines.append(self._EVENTS_JS.replace("__EV__", self._json(ev)).replace("__HOST__", f"{var_prefix}s{host}"))
+        lg = self.__dict__.get("_legend")
+        if lg:
+            ent = []
+            for i, s in enumerate(self._series):
+                o = s.get("options", {})
+                if s.get("type") in ("LineSeries", "AreaSeries", "BaselineSeries", "HistogramSeries",
+                                     "CandlestickSeries", "BarSeries") and o.get("title"):
+                    col = o.get("color") or o.get("lineColor") or o.get("upColor") or "#888"
+                    ent.append({"v": f"{var_prefix}s{i}", "n": o["title"], "c": col})
+            if ent:
+                pos = {"top-left": "top:6px;left:10px", "top-right": "top:6px;right:70px",
+                       "bottom-left": "bottom:30px;left:10px", "bottom-right": "bottom:30px;right:70px"}.get(lg, "top:6px;left:10px")
+                items = ",".join('{n:%s,c:%s,s:%s}' % (json.dumps(e["n"]), json.dumps(e["c"]), e["v"]) for e in ent)
+                lines.append(self._LEGEND_JS.replace("__ITEMS__", items).replace("__POS__", pos))
+        live = self.__dict__.get("_live_hide")
+        if live and live["toggle"]:
+            lines.append(self._LIVE_TOGGLE_JS.replace("__ID__", var_prefix or "c"))
+        for f in self._fills:
+            lines.append(self._FILL_JS.replace("__A__", f"{var_prefix}s{f['a']}").replace("__B__", f"{var_prefix}s{f['b']}")
+                         .replace("__UP__", json.dumps(f["up"])).replace("__DOWN__", json.dumps(f["down"])))
         return "\n        ".join(lines)
+
+    _FILL_JS = r"""
+        (function(){
+          const A = __A__, B = __B__, UP = __UP__, DOWN = __DOWN__;
+          const P = { _c: null, attached(p){ this._c = p.chart; }, detached(){ this._c = null; },
+                      updateAllViews(){}, paneViews(){ return [this._v]; } };
+          P._v = { zOrder(){ return 'bottom'; }, renderer(){ return { draw(target){
+            target.useMediaCoordinateSpace(function(scope){
+              if (!P._c) return;
+              const ctx = scope.context, ts = P._c.timeScale();
+              const da = A.data(), db = B.data(), bm = {};
+              for (const p of db) if (p.value !== undefined) bm[String(p.time)] = p.value;
+              let prev = null;
+              const quad = (p, q, col) => { ctx.fillStyle = col; ctx.beginPath();
+                ctx.moveTo(p.x, p.ya); ctx.lineTo(q.x, q.ya); ctx.lineTo(q.x, q.yb); ctx.lineTo(p.x, p.yb);
+                ctx.closePath(); ctx.fill(); };
+              for (const p of da){
+                const vb = bm[String(p.time)];
+                if (p.value === undefined || vb === undefined){ prev = null; continue; }
+                const x = ts.timeToCoordinate(p.time), ya = A.priceToCoordinate(p.value), yb = B.priceToCoordinate(vb);
+                if (x === null || ya === null || yb === null){ prev = null; continue; }
+                const cur = {x, ya, yb, d: p.value - vb};
+                if (prev){
+                  if ((prev.d >= 0) === (cur.d >= 0)) quad(prev, cur, cur.d >= 0 ? UP : DOWN);
+                  else {                                   // sign change: split at the crossing
+                    const k = prev.d / (prev.d - cur.d), xm = prev.x + (cur.x - prev.x) * k,
+                          ym = prev.ya + (cur.ya - prev.ya) * k, m = {x: xm, ya: ym, yb: ym};
+                    quad(prev, m, prev.d >= 0 ? UP : DOWN); quad(m, cur, cur.d >= 0 ? UP : DOWN);
+                  }
+                }
+                prev = cur;
+              }
+            });
+          } }; } };
+          A.attachPrimitive(P);
+        })();
+    """
+
+    _LEGEND_JS = r"""
+        (function(){
+          const IT = [__ITEMS__];
+          const box = document.createElement('div');
+          box.style.cssText = 'position:absolute;__POS__;z-index:20;display:flex;flex-wrap:wrap;gap:2px 12px;' +
+            'font:11px/16px -apple-system,Segoe UI,sans-serif;color:inherit;max-width:70%';
+          for (const it of IT){
+            const el = document.createElement('span');
+            el.style.cssText = 'cursor:pointer;user-select:none;white-space:nowrap;display:inline-flex;align-items:center';
+            el.title = 'Click to show / hide';
+            el.innerHTML = '<i style="display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:6px;background:' + it.c + '"></i>' + it.n;
+            let on = true;
+            el.onclick = function(){ on = !on; it.s.applyOptions({visible: on}); el.style.opacity = on ? '1' : '0.35';
+                                     el.style.textDecoration = on ? 'none' : 'line-through'; };
+            box.appendChild(el);
+          }
+          document.getElementById('fc').appendChild(box);
+        })();
+    """
+
+    _LIVE_TOGGLE_JS = r"""
+        (function(){
+          let shown = false;
+          const btn = document.createElement('button');
+          btn.textContent = 'Reveal live';
+          btn.style.cssText = 'position:absolute;top:6px;right:70px;z-index:20;font:10px/1 Consolas,monospace;' +
+            'padding:4px 8px;border-radius:4px;border:1px solid rgba(128,128,128,0.45);' +
+            'background:rgba(128,128,128,0.15);color:inherit;cursor:pointer';
+          btn.onclick = function(){
+            shown = !shown;
+            for (const r of _liveReg) r[0].setData(shown ? r[1].concat(r[2]) : r[1].concat(r[2].map(d => ({time: d.time}))));
+            btn.textContent = shown ? 'Hide live' : 'Reveal live';
+          };
+          document.getElementById('fc').appendChild(btn);
+        })();
+    """
 
     _EVENTS_JS = r"""
         (function(){
@@ -2429,8 +2714,9 @@ class Chart:
                 const x0 = ts.timeToCoordinate(e.s);
                 const x1 = e.e ? ts.timeToCoordinate(e.e) : null;
                 if (x0 === null) continue;
+                if (e.open){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, W - x0), H); }   // live_from: to the right edge
                 if (e.e && x1 !== null){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H); }
-                if (!e.e){ ctx.fillStyle = e.fill; ctx.fillRect(x0 - 1, 0, 3, H); }              // point event: thin band
+                if (!e.e && !e.open){ ctx.fillStyle = e.fill; ctx.fillRect(x0 - 1, 0, 3, H); }              // point event: thin band
                 if (e.edges){
                   ctx.save(); ctx.setLineDash(e.dash); ctx.lineWidth = 1; ctx.strokeStyle = e.line;
                   ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
@@ -3192,6 +3478,55 @@ class Chart:
         )
         return header + bar, js, extra
 
+    def _build_readout(self):
+        """Legend strip under the plot: one entry per series with its value on the hovered day
+        (the latest day when the pointer is away), plus the total / gap. Returns (html, js, height)."""
+        r = self._readout
+        if not r:
+            return "", "", 0
+        import math
+        is_dark = self._theme_name in DARK_THEMES
+        ink = "rgba(232,232,228,0.92)" if is_dark else "rgba(25,25,24,0.88)"
+        mute = "rgba(232,232,228,0.55)" if is_dark else "rgba(25,25,24,0.50)"
+        n = len(r["assets"]) + 2
+        rows = max(1, math.ceil(n / 6))
+        height = 14 + 19 * rows
+        html_ = (f'<div id="rd" style="display:flex;flex-wrap:wrap;align-content:flex-start;gap:3px 16px;'
+                 f'padding:7px 12px 0;height:{height}px;overflow:hidden;'
+                 f'font:11px/16px \'JetBrains Mono\',ui-monospace,Consolas,monospace;color:{mute}"></div>')
+        payload = {k: r.get(k) for k in ("kind", "assets", "colors", "data", "currency", "total", "gap", "ink")}
+        js = """
+    (function(){
+      const R = %s, el = document.getElementById('rd');
+      const keys = Object.keys(R.data).sort(), last = keys[keys.length - 1];
+      const cur = R.currency || '';
+      const fmt = (v) => (v < 0 ? '-' : '') + cur + (Math.abs(v) >= 1e6 ? (Math.abs(v)/1e6).toFixed(2) + 'm'
+                 : Math.abs(v) >= 1000 ? (Math.abs(v)/1000).toFixed(1) + 'k' : Math.abs(v).toFixed(0));
+      const sw = (c, dash) => dash ? '<span style="display:inline-block;width:12px;border-top:1px dashed ' + c + ';margin-right:6px;vertical-align:middle"></span>'
+                                   : '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + c + ';margin-right:6px"></span>';
+      const item = (sw_, name, v, strong) => '<span style="white-space:nowrap">' + sw_ + name + ' <b style="color:' +
+                 (v < 0 ? '%s' : '%s') + ';font-weight:' + (strong ? 700 : 600) + '">' + fmt(v) + '</b></span>';
+      function show(key){
+        const d = R.data[key]; if (!d) return;
+        let h = '<span style="white-space:nowrap;color:%s;font-weight:600">' + key + '</span>';
+        if (R.kind === 'fill'){
+          const v = d[R.assets[0]], b = d[R.assets[1]];
+          h += item(sw(R.colors[0]), R.assets[0], v) + item(sw(R.colors[1], true), R.assets[1], b)
+             + item('', R.gap, v - b, true);
+        } else {
+          let tot = 0;
+          R.assets.forEach(function(a, i){ const v = d[a] || 0; tot += v; if (Math.abs(v) < 0.5) return;
+                                           h += item(sw(R.colors[i]), a, v); });
+          if (R.total) h += item(sw(R.ink), 'Total', tot, true);
+        }
+        el.innerHTML = h;
+      }
+      show(last);
+      chart.subscribeCrosshairMove(function(p){ show(p && p.time ? String(p.time) : last); });
+    })();
+""" % (json.dumps(payload), "#E8756B" if is_dark else "#B3261E", ink, ink)
+        return html_, js, height
+
     def _build_html(self) -> str:
         chart_opts = self._json(self._build_chart_options())
         series_js = self._build_series_js()
@@ -3360,6 +3695,7 @@ class Chart:
         # ── Allocation tooltip overlay ────────────────────────────────────
         alloc_tooltip_html = ""
         alloc_tooltip_js = ""
+        readout_html, readout_js, readout_extra = self._build_readout()
         if self._alloc_tooltip:
             at = self._alloc_tooltip
             is_dark_bg = self._theme_name in DARK_THEMES
@@ -3401,6 +3737,9 @@ class Chart:
                 f"    const allocAssets = {assets_json};",
                 f"    const allocColors = {colors_json};",
                 f"    const allocHideZero = {json.dumps(at['hide_zero'])};",
+                f"    const allocAmount = {json.dumps(at.get('unit') == 'amount')};",
+                f"    const allocCur = {json.dumps(at.get('currency') or '')};",
+                "    const fmtAmt = (v) => (v < 0 ? '-' : '') + allocCur + (Math.abs(v) >= 1e6 ? (Math.abs(v)/1e6).toFixed(2) + 'm' : Math.abs(v) >= 1000 ? (Math.abs(v)/1000).toFixed(1) + 'k' : Math.abs(v).toFixed(0));",
                 "    const allocTooltip = document.getElementById('alloc-tooltip');",
                 "    const allocDate = document.getElementById('alloc-date');",
                 "    const allocItems = document.getElementById('alloc-items');",
@@ -3432,7 +3771,7 @@ class Chart:
                 "            const color = allocColors[i];",
                 "            const colorDot = '<span style=\"display:inline-block;width:10px;height:10px;border-radius:3px;background:' + color + ';margin-right:8px\"></span>';",
                 "            const sign = w >= 0 ? '+' : '';",
-                "            const wFormatted = (sign + w.toFixed(1)) + '%';",
+                "            const wFormatted = allocAmount ? fmtAmt(w) : (sign + w.toFixed(1)) + '%';",
                 f"            const textColor = w < 0 ? '{short_color}' : '{val_c}';",
                 f"            html += '<div style=\"display:flex;justify-content:space-between;align-items:center;margin:1px 0\">';",
                 f"            html += '<span style=\"color:{lbl_c};display:flex;align-items:center\">' + colorDot + asset + '</span>';",
@@ -3442,6 +3781,11 @@ class Chart:
                 "        allocItems.innerHTML = html;",
                 "        ",
                 "        const netSign = netExp >= 0 ? '+' : '';",
+                "        if (allocAmount) {",
+                f"            allocTotals.innerHTML = '<div style=\"display:flex;justify-content:space-between;font-weight:600\"><span>Total</span><span style=\"margin-left:8px\">' + fmtAmt(netExp) + '</span></div>';",
+                "            allocTooltip.style.display = 'block';",
+                "            return;",
+                "        }",
                 f"        allocTotals.innerHTML = '<div style=\"display:flex;justify-content:space-between;font-weight:600\"><span>Net</span><span style=\"margin-left:8px\">' + netSign + netExp.toFixed(1) + '%</span></div>' +",
                 f"                                '<div style=\"display:flex;justify-content:space-between\"><span>Gross</span><span style=\"margin-left:8px\">' + grossExp.toFixed(1) + '% (' + (grossExp/100).toFixed(2) + 'x)</span></div>';",
                 "        ",
@@ -3581,7 +3925,7 @@ class Chart:
         rebase_html, rebase_js, rebase_extra = self._build_rebase(is_dark_bg)
 
         total_extra = (slider_extra_height + smoothing_extra_height + season_extra
-                       + cone_extra + rebase_extra)
+                       + cone_extra + rebase_extra + readout_extra)
         self._slider_extra_height = total_extra
 
         _resize_js = """
@@ -3656,6 +4000,7 @@ body{{{bg_css}overflow:hidden;position:relative;border-radius:12px;height:{self.
 {_kmb_overlay}
 {stats_html}
 {alloc_tooltip_html}
+{readout_html}
 <div id="err"></div>
 {slider_html}
 {smoothing_html}
@@ -3673,6 +4018,7 @@ try {{
     {smoothing_js}
     {rebase_js}
     {alloc_tooltip_js}
+    {readout_js}
 }} catch(e) {{
     var el = document.getElementById('err');
     el.style.display = 'block';
