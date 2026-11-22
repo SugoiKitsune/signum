@@ -808,7 +808,7 @@ class Chart:
             chart.line(equity).live_from("2024-01-01", hide=True)
         """
         if opacity is None:
-            opacity = 0.12
+            opacity = 0.30          # drawn over the series, so strong enough to read as "covered"
         hexc = color.lstrip("#")
         r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
         s = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -2617,10 +2617,11 @@ class Chart:
                 pos = {"top-left": "top:6px;left:10px", "top-right": "top:6px;right:70px",
                        "bottom-left": "bottom:30px;left:10px", "bottom-right": "bottom:30px;right:70px"}.get(lg, "top:6px;left:10px")
                 items = ",".join('{n:%s,c:%s,s:%s}' % (json.dumps(e["n"]), json.dumps(e["c"]), e["v"]) for e in ent)
-                lines.append(self._LEGEND_JS.replace("__ITEMS__", items).replace("__POS__", pos))
+                lines.append(self._LEGEND_JS.replace("__ITEMS__", items).replace("__POS__", pos)
+                             .replace("__INK__", "rgba(232,232,228,0.95)" if self._theme_name in DARK_THEMES else "rgba(25,25,24,0.9)"))
         live = self.__dict__.get("_live_hide")
         if live and live["toggle"]:
-            lines.append(self._LIVE_TOGGLE_JS.replace("__ID__", var_prefix or "c"))
+            lines.append(self._LIVE_TOGGLE_JS.replace("__INK__", "rgba(232,232,228,0.95)" if self._theme_name in DARK_THEMES else "rgba(25,25,24,0.9)"))
         for f in self._fills:
             lines.append(self._FILL_JS.replace("__A__", f"{var_prefix}s{f['a']}").replace("__B__", f"{var_prefix}s{f['b']}")
                          .replace("__UP__", json.dumps(f["up"])).replace("__DOWN__", json.dumps(f["down"])))
@@ -2668,7 +2669,7 @@ class Chart:
           const IT = [__ITEMS__];
           const box = document.createElement('div');
           box.style.cssText = 'position:absolute;__POS__;z-index:20;display:flex;flex-wrap:wrap;gap:2px 12px;' +
-            'font:11px/16px -apple-system,Segoe UI,sans-serif;color:inherit;max-width:70%';
+            'font:600 12px/18px -apple-system,Segoe UI,sans-serif;color:__INK__;max-width:70%';
           for (const it of IT){
             const el = document.createElement('span');
             el.style.cssText = 'cursor:pointer;user-select:none;white-space:nowrap;display:inline-flex;align-items:center';
@@ -2688,9 +2689,10 @@ class Chart:
           let shown = false;
           const btn = document.createElement('button');
           btn.textContent = 'Reveal live';
-          btn.style.cssText = 'position:absolute;top:6px;right:70px;z-index:20;font:10px/1 Consolas,monospace;' +
-            'padding:4px 8px;border-radius:4px;border:1px solid rgba(128,128,128,0.45);' +
-            'background:rgba(128,128,128,0.15);color:inherit;cursor:pointer';
+          btn.style.cssText = 'position:absolute;bottom:34px;right:70px;z-index:20;font:600 12px/1 -apple-system,Segoe UI,sans-serif;' +
+            'padding:4px 6px;border:none;outline:none;background:transparent;color:__INK__;opacity:0.8;cursor:pointer';
+          btn.onmouseenter = function(){ btn.style.opacity = '1'; };
+          btn.onmouseleave = function(){ btn.style.opacity = '0.8'; };
           btn.onclick = function(){
             shown = !shown;
             for (const r of _liveReg) r[0].setData(shown ? r[1].concat(r[2]) : r[1].concat(r[2].map(d => ({time: d.time}))));
@@ -2705,7 +2707,17 @@ class Chart:
           const EV = __EV__;
           const P = { _c: null, _r: null,
             attached(p){ this._c = p.chart; this._r = p.requestUpdate; },
-            detached(){ this._c = null; }, updateAllViews(){}, paneViews(){ return [this._v]; } };
+            detached(){ this._c = null; }, updateAllViews(){}, paneViews(){ return [this._v, this._t]; } };
+          // live_from(): drawn ABOVE the series, so the live tail is visibly covered, not just tinted behind the candles
+          P._t = { zOrder(){ return 'top'; }, renderer(){ return { draw(target){
+            target.useMediaCoordinateSpace(function(scope){
+              if (!P._c) return;
+              const ctx = scope.context, H = scope.mediaSize.height, W = scope.mediaSize.width, ts = P._c.timeScale();
+              for (const e of EV){ if (!e.open) continue;
+                const x0 = ts.timeToCoordinate(e.s); if (x0 === null) continue;
+                ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, W - x0), H); }
+            });
+          } }; } };
           P._v = { zOrder(){ return 'bottom'; }, renderer(){ return { draw(target){
             target.useMediaCoordinateSpace(function(scope){
               if (!P._c) return;
@@ -2714,7 +2726,6 @@ class Chart:
                 const x0 = ts.timeToCoordinate(e.s);
                 const x1 = e.e ? ts.timeToCoordinate(e.e) : null;
                 if (x0 === null) continue;
-                if (e.open){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, W - x0), H); }   // live_from: to the right edge
                 if (e.e && x1 !== null){ ctx.fillStyle = e.fill; ctx.fillRect(x0, 0, Math.max(1, x1 - x0), H); }
                 if (!e.e && !e.open){ ctx.fillStyle = e.fill; ctx.fillRect(x0 - 1, 0, 3, H); }              // point event: thin band
                 if (e.edges){
