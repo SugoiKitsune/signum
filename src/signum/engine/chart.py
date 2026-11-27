@@ -312,6 +312,7 @@ class Chart:
         watermark: Optional[str] = None,
         logo: bool = True,
         y_format: Optional[str] = None,
+        y_labels: Optional[Dict[float, str]] = None,
     ):
         self._theme_name = theme.lower()
         self._theme = resolve_theme(theme)
@@ -320,6 +321,9 @@ class Chart:
         self._watermark = watermark
         self._logo = logo
         self._y_format = y_format  # 'kmb' for K/M/B suffixes, 'percent' for %
+        # categorical y axis: {value: label} (e.g. rating notches -> 'BB+'). Only whole values that have a label
+        # print a tick/crosshair text; anything between two categories prints nothing.
+        self._y_labels = {float(k): str(v) for k, v in y_labels.items()} if y_labels else None
         self._series: List[Dict[str, Any]] = []
         self._price_lines: List[Dict[str, Any]] = []
         self._markers: Dict[int, List[Dict[str, Any]]] = {}
@@ -2395,6 +2399,11 @@ class Chart:
 
     def _get_formatter_js(self) -> str:
         """Return raw JS function literal for price formatting, or empty string."""
+        if self._y_labels:
+            import json as _json
+            _m = _json.dumps({str(int(k)): v for k, v in self._y_labels.items()}, ensure_ascii=False)
+            return ("function(p){var m=" + _m + ";var r=Math.round(p);"
+                    "return (Math.abs(p-r)<0.02&&m[r]!==undefined)?m[r]:'';}")
         if not self._y_format:
             # DEFAULT: trim trailing zeros (200.00 -> 200, 100.10 -> 100.1) and thousand-separate large
             # values, instead of the charting lib's fixed 2-decimal default that printed "0.00" on every
